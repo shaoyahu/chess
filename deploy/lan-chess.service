@@ -1,0 +1,48 @@
+# 局域网国际象棋 —— systemd 服务单元
+#
+# 装到：/etc/systemd/system/lan-chess.service
+# 启用：systemctl daemon-reload && systemctl enable --now lan-chess
+# 看日志：journalctl -u lan-chess -f
+#
+# ⚠️ 改完这个文件里带「改这里」注释的地方再启用。
+
+[Unit]
+Description=局域网国际象棋（Next.js + WebSocket）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 改这里：不要用 root。
+# 房间状态要往 .data 目录落盘，root 跑出来的文件属主是 root，
+# 以后换成普通用户就写不进去了（部署自检第 4 项会报这个）。
+User=lan-chess
+Group=lan-chess
+
+# 改这里：项目目录（要能用服务用户读，.data 要能写）
+WorkingDirectory=/opt/lan-chess
+
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=3000
+# 装了原生 Stockfish 的话把路径写这儿；不写就自动用 npm 的 WASM 版
+# Environment=STOCKFISH_PATH=/usr/games/stockfish
+
+# 改这里：node 的绝对路径（which node 查）。
+# 直接用 tsx 的 CLI，避免多一层 npm 包装（npm start 会再套一层 sh）。
+ExecStart=/usr/bin/node /opt/lan-chess/node_modules/tsx/dist/cli.mjs server.ts
+
+Restart=always
+RestartSec=3
+
+# 崩溃时留日志，别静默重启
+StandardOutput=journal
+StandardError=journal
+
+# 基本加固：不让提权，/tmp 私有
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

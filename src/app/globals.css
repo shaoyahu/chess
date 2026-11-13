@@ -1,0 +1,3921 @@
+/* ==================================================================
+ * 局域网国际象棋 —— 全站样式
+ *
+ * 设计系统 v2「纸与墨」：token 说明见 docs/design.md。
+ *
+ * 三条硬规矩（改样式前先读）：
+ *  1. **正文对比度 ≥ 4.5:1**（WCAG AA）—— `npm run contrast` 是硬门禁，
+ *     改任何颜色都要跑一次；同一个色值要对着**所有实际底色**核
+ *     （白底够 ≠ 米白底也够）。
+ *  2. **不留原生控件样式**：select / range / checkbox / text input
+ *     全部 appearance: none 并自绘外观；下拉框更彻底 ——
+ *     换成了自绘的 `Picker` 组件（原生 `<select>` 的展开列表仍是系统绘制的）。
+ *  3. **grid 一律 minmax(0, 1fr)**、flex 子项放长文本一律 `min-width: 0`，
+ *     否则窄屏会出横向滚动条。
+ * ================================================================== */
+
+:root {
+  /* ---------- 色彩核心（6 色 + 主色深浅） ----------
+   *
+   * 冷纸底 + 深墨字 + 靛蓝主色 + 朱砂危险 + 青玉成功。
+   * 为什么不用暖米 + 赭石：那是 AI 生成界面的默认审美，换成任何产品都一样，
+   * 跟「棋」没关系（详见 docs/design.md 第 0 节）。
+   */
+  --paper: #eef1f6;
+  --card: #ffffff;
+  --sink: #e6ebf3;
+  --ink: #111a24;
+  --ink-2: #3f4f63;
+  --ink-3: #566578;
+  --indigo: #2f5ea8;
+  --indigo-deep: #234a86;
+  --vermilion: #b4341f;
+  --jade: #0f6f5c;
+  /** 棋盘上「上一步」的箭头色（唯一一个第四色，与木色棋盘呼应） */
+  --amber: #d9930d;
+  /** 棋盘上「引擎建议」的箭头色 —— 比主色更亮更淡 = 还没落子 */
+  --hint-blue: #2f6fd0;
+
+  /* ---------- 语义别名（对比度门禁按这些名字取值） ---------- */
+  --bg-deep: var(--paper);
+  --bg-panel: var(--card);
+  --bg-elevated: var(--sink);
+  --accent: var(--indigo);
+  --accent-strong: var(--indigo-deep);
+  --accent-hover: #1b3b6d;
+  --accent-soft: rgba(47, 94, 168, 0.1);
+  --text: var(--ink);
+  --text-dim: var(--ink-2);
+  --text-faint: var(--ink-3);
+  --danger: var(--vermilion);
+  --success: var(--jade);
+  --border: #d5dce6;
+  --border-strong: #bcc6d4;
+
+  /* ---------- 可调的界面偏好（见 src/lib/ui-prefs.ts） ---------- */
+  --ui-scale: 1;
+  --ui-density: 1;
+  --ui-radius: 10px;
+
+  /* ---------- 字号（连续，挂在 --ui-scale 上） ---------- */
+  --fs-xs: calc(10.5px * var(--ui-scale));
+  --fs-sm: calc(12px * var(--ui-scale));
+  --fs-md: calc(13.5px * var(--ui-scale));
+  --fs-lg: calc(15px * var(--ui-scale));
+  --fs-xl: calc(19px * var(--ui-scale));
+
+  /* ---------- 间距（连续，挂在 --ui-density 上） ---------- */
+  --sp-1: calc(4px * var(--ui-density));
+  --sp-2: calc(8px * var(--ui-density));
+  --sp-3: calc(12px * var(--ui-density));
+  --sp-4: calc(16px * var(--ui-density));
+  --sp-5: calc(22px * var(--ui-density));
+  --sp-6: calc(30px * var(--ui-density));
+
+  /* ---------- 圆角 ---------- */
+  --radius: var(--ui-radius);
+  --radius-sm: calc(var(--ui-radius) * 0.6);
+  --radius-lg: calc(var(--ui-radius) * 1.5);
+
+  /* ---------- 字族角色 ---------- */
+  --font-sans:
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* ---------- 阴影（两层：一层贴地、一层浮起） ---------- */
+  --shadow: 0 1px 2px rgba(20, 32, 48, 0.06), 0 10px 28px rgba(20, 32, 48, 0.1);
+  --shadow-lg: 0 2px 6px rgba(20, 32, 48, 0.08), 0 24px 60px rgba(20, 32, 48, 0.18);
+
+  /* ---------- 棋盘 ---------- */
+  --bg-board-light: #e8d5b0;
+  --bg-board-dark: #a97c50;
+  /** 3D 画布背景：冷灰蓝（与暖色木纹明确区分） */
+  --board3d-bg: #cbd4de;
+  /** 棋盘外框的木色（Board2D 会按主题覆盖这两个变量） */
+  --board-frame: #5c4632;
+  /**
+   * 木纹贴图 —— **默认 none**（纯色方块）。
+   *
+   * 原来「木纹贴图 + 底色」叠出来，格子看上去不是纯色、深浅随纹理起伏，
+   * 远近格子的明暗还会变，容易把深浅格看串。默认纯色，木纹降级成设置里的可选主题。
+   */
+  --wood-light: none;
+  --wood-dark: none;
+
+  /* ---------- 对局页舞台布局 ---------- */
+  /**
+   * 对局页棋盘的可用高度（兜底值）。
+   *
+   * 真正的值按布局模式给：
+   *   .layout-wide  → calc(100vh - 140px)   HUD / 聊天都在**两侧**，不占纵向空间
+   *   .layout-narrow→ calc(100vh - 294px)   HUD 在上、聊天在下，棋盘相应缩小
+   * 顶栏（上下 padding + 内容 + margin）约 84px，底部留白 40px，
+   * 再留一点余量 —— 棋盘取这个高度，页面就不会出现纵向滚动。
+   * 宽度方向由所在列宽决定（`min(100%, …)`），窄屏自动让位。
+   */
+  --board-vh: calc(100vh - 196px);
+  /** HUD / 聊天两列之间的间距 */
+  --layout-gap: 20px;
+  /** 宽屏时左列（HUD）的宽度 */
+  --side-hud: 260px;
+  /** 宽屏时右列（聊天）的宽度 */
+  --side-chat: 300px;
+  /**
+   * 3D 画布的宽:高比例。
+   *
+   * 3D 要用宽画布而不是正方形：棋盘是**平铺在地面上的正方形**，
+   * 从玩家这一侧俯视时投影出来是「宽而扁」的梯形。正方形画布下棋盘只用到约 60%。
+   *
+   * 1.5579 不是拍脑袋的数：它是「棋盘 + 全部棋子（按每格都可能站最高的王来算）」
+   * 在 Board3D.tsx 默认机位下的投影宽高比，由 scripts/solve-3d-camera.ts 解出。
+   * 用这个比例时，棋盘在画布里的横向占比与纵向占比**完全相等**（各 97%）。
+   *
+   * 这个值必须与 Board3D.tsx 里的默认机位（极角 / 距离 / fov）保持一致，
+   * 两处都写了推导注释，改动其中一处就要同步另一处（跑 solve:3d-camera.ts 重解）。
+   */
+  --board3d-aspect: 1.5579;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg-deep);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* 键盘可见焦点环 —— 鼠标点击不出现，Tab 一定出现 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- 排版角色 ---------- */
+
+/** eyebrow：英文全大写 mono，只出现在 section 头部 */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+/** meta：等宽数字（计数、时间戳），对齐不抖 */
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 通用布局 ---------- */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.container {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/**
+ * 对局页专用宽容器。
+ *
+ * 大厅保持 1080 的阅读宽度；对局页要「棋盘优先」，
+ * 页面宽度必须吃满窗口，否则两侧留出的大片空白全是浪费。
+ */
+.container.wide {
+  max-width: 1800px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--sp-5);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  min-width: 0;
+}
+
+.brand .mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  flex: 0 0 auto;
+}
+
+.brand .brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand small {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.status-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.status-dot i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  display: inline-block;
+}
+
+.status-dot.online i {
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(15, 111, 92, 0.16);
+}
+
+/* ---------- 卡片 / 面板 ---------- */
+
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-5);
+  box-shadow: var(--shadow);
+}
+
+.card h2 {
+  margin: 0 0 4px;
+  font-size: var(--fs-lg);
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+.card .hint {
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  line-height: 1.65;
+}
+
+/**
+ * section 头：eyebrow（英文大写 mono）+ 中文标题 + 右侧 meta（计数）。
+ *
+ * 这是「仪器感」的主要来源 —— 计数用等宽数字，跳动时不左右抖。
+ */
+.section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.section-head .section-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.section-head .section-title .zh {
+  font-size: var(--fs-lg);
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+.section-head .section-meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- 按钮 ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 9px 15px;
+  font-size: var(--fs-md);
+  font-weight: 550;
+  line-height: 1.3;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    transform 0.08s;
+}
+
+.btn:hover:not(:disabled) {
+  background: #dde4ee;
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #ffffff;
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-dim);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.btn.small {
+  padding: 6px 11px;
+  font-size: var(--fs-sm);
+}
+
+.btn.danger {
+  color: var(--danger);
+  border-color: rgba(180, 52, 31, 0.4);
+  background: transparent;
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: rgba(180, 52, 31, 0.08);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-row {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* 顶栏的图标按钮（设置齿轮） */
+/*
+ * 图标按钮（顶栏齿轮、私信）：正方形，只放一个图标。
+ *
+ * 之前写的是 `.icon-btn`（特异性 0,1,0），而 `.btn.small`（0,2,0）也设了 padding ——
+ * **高特异性的那条赢了**：按钮被限死 30px 宽，却还带着 11px 的左右内边距，
+ * 15px 的图标从 8px 宽的内容区里溢出来 —— 看着就「小得离谱」。
+ *
+ * 写成 `.btn.icon-btn`（同为 0,2,0，但写在后面）才真的盖得住。
+ * 尺寸从 30×30 / 15px 图标放大到 38×38 / 19px 图标：
+ * 点击区域和视觉重量都对得上旁边那些带字的按钮。
+ */
+.btn.icon-btn {
+  padding: 8px;
+  width: 38px;
+  height: 38px;
+}
+
+/* ---------- 表单 ---------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field label {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* 字段级校验错误 —— 常驻显示在输入框下面（不是飘走的 toast） */
+.field-error {
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  line-height: 1.35;
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.input {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: var(--fs-md);
+  outline: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.input:hover {
+  border-color: var(--accent);
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.input::placeholder {
+  color: var(--text-faint);
+}
+
+/**
+ * 自绘下拉（Picker）—— **替代原生 `<select>`**。
+ *
+ * 原来这里用的是原生 select + `appearance: none`：按钮是接管了，
+ * 但展开后的**选项列表**仍是系统绘制的（圆角、行高、选中态都不受控），
+ * 看起来永远是「半个原生控件」。所以整套自绘：触发按钮 + 浮层列表。
+ *
+ * 无障碍：触发器是 `role="combobox"`，选项是 `role="option"`，
+ * 焦点始终留在触发器上（选项 `tabIndex={-1}`），
+ * 键盘走 ↑↓ / Home / End / Enter / Esc。
+ */
+.picker {
+  position: relative;
+  min-width: 0;
+}
+
+.picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 150px;
+  padding: 9px 11px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 550;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.picker-trigger:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.picker-trigger:focus-visible,
+.picker-trigger[aria-expanded='true'] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.picker-trigger:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.picker-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-chevron {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.15s;
+}
+
+.picker-trigger[aria-expanded='true'] .picker-chevron {
+  transform: rotate(180deg);
+}
+
+.picker-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  animation: picker-in 0.12s ease-out;
+}
+
+@keyframes picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.picker-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: 7px 9px;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius-sm) * 0.75);
+  color: var(--text);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-option[data-active='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.picker-option[aria-selected='true'] {
+  font-weight: 620;
+}
+
+.picker-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.picker-option-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.picker-tick {
+  flex: none;
+  color: var(--accent-strong);
+}
+
+/* ---------- 提示条（全局 toast） ---------- */
+
+/**
+ * toast 容器：**右上角**固定，宽 380px。
+ *
+ * 之前 toast 是「顶部居中」，而且——更重要——**根本没有组件渲染它**
+ * （服务端一直会下发 t:'toast'，但全站没有 ToastHost）。
+ * 大厅里「房间不存在」这类失败以前是完全静默的。
+ */
+.toasts {
+  position: fixed;
+  /*
+   * 往下挪一点：**别盖住顶栏**。
+   *
+   * 顶栏右上角就是「私信」「设置」两枚按钮（还有私信的未读角标），
+   * toast 原来贴在 top:16px —— 正好**压在上面**：
+   *   ① 角标被盖住（刚说有未读私信，角标却看不见）；
+   *   ② 这几秒里那两个按钮点不动（z-index 500 在顶栏之上）。
+   *
+   * 顶栏高 12+38+12 = 62px（含 1px 边线），所以 72px 刚好让开。
+   * 门禁 D7 会在 1600px 与 430px 两个视口下核「toast 与顶栏按钮不相交」。
+   */
+  top: 72px;
+  right: 16px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-end;
+  pointer-events: none;
+  /*
+   * **提示区是有边界的**（用户拍板）。
+   *
+   * 私信轰炸时，这一列会从右上角一路铺到屏幕中间，把棋盘盖住。
+   * 所以这里给一个高度上限：超出部分裁掉。
+   *
+   * 裁掉的**一定是最老的那几条** —— ToastHost 把新的排在上面，
+   * 容器又是从上往下长，溢出裁的正是最下面。
+   */
+  max-height: calc(100vh - 96px);
+  overflow: hidden;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  /* 不许被压扁：提示区封顶时是「裁掉」，不是「挤扁」 */
+  flex: 0 0 auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-faint);
+  border-radius: var(--radius-sm);
+  padding: 10px 10px 10px 12px;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  box-shadow: var(--shadow-lg);
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.toast-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  padding: 0;
+}
+
+.toast-close:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.toast-error {
+  border-left-color: var(--danger);
+}
+
+.toast-error .toast-dot {
+  background: var(--danger);
+}
+
+.toast-error .toast-text {
+  color: var(--danger);
+}
+
+.toast-success {
+  border-left-color: var(--success);
+}
+
+.toast-success .toast-dot {
+  background: var(--success);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ---------- 大厅 ---------- */
+
+.lobby-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+/**
+ * 四个开局方式 —— 快速匹配 / 人机对弈 / 创建房间 / 加入房间。
+ *
+ * 一格一个，宽度均等（`minmax(0, 1fr)`），窄屏自动折成两列。
+ */
+.mode-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+
+.mode-bar .btn {
+  width: 100%;
+  padding: 10px 8px;
+}
+
+.mode-bar .btn.active {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
+.mode-bar .btn.active:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #ffffff;
+}
+
+/**
+ * 当前方式的表单区。
+ *
+ * 底色用「凹陷面」（--bg-elevated）跟白色卡片区分开 ——
+ * 这块是**别人的选择**（时限 / 难度 / 房间类型），不该跟卡片一样平。
+ *
+ * 注意：这里的文字一律用 --text / --text-dim，
+ * 不用 --text-faint（它在浅色面板上不够 4.5:1）。
+ */
+.mode-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.mode-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  align-items: flex-end;
+}
+
+.mode-fields .field {
+  flex: 0 0 auto;
+  min-width: 170px;
+}
+
+.mode-panel .field label {
+  color: var(--text-dim);
+}
+
+.mode-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+/* 匹配中的状态 */
+.queue-state {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.queue-title {
+  font-size: var(--fs-md);
+  font-weight: 620;
+  color: var(--text);
+}
+
+.queue-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: 380px;
+  overflow-y: auto;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+
+.room-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s;
+}
+
+.room-row:hover {
+  border-color: var(--accent);
+}
+
+.room-main {
+  min-width: 0;
+}
+
+/** 谁 VS 谁 —— 只有一个人时只显示那个人的名字 */
+.room-who {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.room-who .who-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-who .who-vs {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  flex: none;
+}
+
+/** 时长 / 状态 / 观战人数 —— 都在浅色面板上，用 --text-dim */
+.room-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 3px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.room-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.room-tag.invite {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+}
+
+/** 房间码 —— 邀请房不在列表里显示（这是它「只能靠码进」的保证） */
+.room-code {
+  font-family: var(--font-mono);
+  letter-spacing: 0.18em;
+  color: var(--accent-strong);
+}
+
+.room-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
+.empty {
+  padding: var(--sp-5) 10px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}
+
+/* ---------- 对局页 ---------- */
+
+/*
+ * 对局页只有一列 —— 侧栏取消了。
+ *
+ * 之前是「棋盘 + 300px 侧栏」，侧栏里是走子记录和聊天；
+ * 现在走子记录换成棋盘上的箭头、聊天变成右侧按钮 + 浮层，
+ * 整行宽度都让给棋盘。
+ */
+.game-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  flex: 1;
+}
+
+/**
+ * 棋盘舞台 —— **两种布局**，由 JS 判定后写在 class 上（见 page.tsx 的 planStageLayout）。
+ *
+ *   .layout-wide    HUD 在棋盘**左边**，聊天在棋盘**右边**。
+ *                   棋盘是正方形，宽屏的左右余量本来就是浪费的 —— 让给 HUD 和聊天；
+ *                   而且两侧布局不占纵向空间，棋盘还能吃满可用高度。
+ *   .layout-narrow  HUD 在棋盘**上面**，聊天在棋盘**下面**，
+ *                   棋盘相应**缩小**，把上下空间让出来。
+ *                   （视口是正方形时也走这一档 —— 用户明确要求。）
+ *
+ * 两边都是 grid：宽屏三列，窄屏三行。
+ */
+.stage {
+  position: relative;
+  width: 100%;
+  display: grid;
+  column-gap: var(--layout-gap);
+}
+
+.layout-wide {
+  grid-template-columns: var(--side-hud) minmax(0, 1fr) var(--side-chat);
+  grid-template-areas: 'hud board chat';
+  align-items: stretch;
+  /* HUD / 聊天都在两侧 → 棋盘吃满可用高度 */
+  --board-vh: calc(100vh - 140px);
+}
+
+.layout-narrow {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'hud' 'board' 'chat';
+  row-gap: var(--sp-3);
+  /* 上下各留一块（HUD 条 + 聊天块）→ 棋盘缩小 */
+  --board-vh: calc(100vh - 294px);
+}
+
+.col-hud {
+  grid-area: hud;
+  min-width: 0;
+}
+
+.col-chat {
+  grid-area: chat;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/* 宽屏：HUD 卡顶对齐棋盘上沿 */
+.layout-wide .col-hud {
+  align-self: start;
+}
+
+/* 宽屏：聊天块撑满与棋盘等高，记录区自己长大 */
+.layout-wide .col-chat {
+  height: 100%;
+  /*
+   * 右列**不许**比棋盘那列更高 —— 页面不被顶出滚动条**全靠这一道**。
+   * 记录区不设自己的上限（它跟着右列一起长，见下），所以这里就是唯一的高度闸门：
+   * 拆掉它，聊天内容一多页面就出纵向滚动条（门禁 G21 守着这条）。
+   */
+  max-height: var(--board-vh);
+}
+
+/*
+ * 窄屏：聊天块**压成一行** —— 「聊天」按钮 + 快捷聊天。
+ *
+ * 记录区 / 输入框 / 发送按钮都在弹层里，这里不占地方。
+ */
+.layout-narrow .col-chat {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* 棋盘区：棋盘居中 */
+.board-area {
+  grid-area: board;
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.board-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  /*
+   * 宽度必须**确定**：里面的 `.board-frame` 用的是 `min(100%, …)`，
+   * 而 100% 参照的正是这一层 —— 如果这层是 fit-content（父级 align-items:center
+   * 就会变成这样），min(100%, …) 会因循环依赖退化成 min-content，棋盘直接塌缩。
+   */
+  width: 100%;
+}
+
+.board-frame {
+  position: relative;
+  /*
+   * 宽度必须定在这一层（而不是里面的 .board2d）。
+   *
+   * .board-frame 是 .board-panel（column flex + align-items:center）的子项，
+   * 它的宽度默认是 fit-content；如果把 `min(100%, …)` 写在里面的棋盘上，
+   * 100% 参照的又是这个还没定下来的父级宽度 —— 循环依赖，
+   * 浏览器会退化成 min-content，棋盘直接缩成一小块。
+   */
+  width: min(100%, var(--board-vh));
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  box-shadow:
+    0 18px 50px rgba(20, 32, 48, 0.22),
+    0 0 0 8px var(--board-frame),
+    0 0 0 9px rgba(20, 32, 48, 0.22);
+  background: var(--board-frame);
+}
+
+/* ---------- HUD：对局信息卡（宽屏在左，窄屏在上） ---------- */
+
+/*
+ * HUD 常驻，永远在文档流里 —— 结构上就不可能压住棋盘。
+ *
+ *   宽屏：竖排（状态 → 双方 → 操作），占左列；
+ *   窄屏：横排一条，占棋盘上方整行，尽量矮。
+ */
+.hud {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) 10px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  /*
+   * **不能加投影**。
+   *
+   * 窄屏时这张卡就贴在棋盘**正上方**，而它的 z-index（20）高于画布 ——
+   * 于是投影会直接**盖在棋盘顶部**（实测：3D 画布上沿被压暗 7%，
+   * 像素测量还会因此误判成「棋盘被裁掉」）。
+   * 边框 + 底色已经足够把卡片和页面区分开，投影只会糊到棋盘上。
+   */
+  box-shadow: none;
+}
+
+/* 宽屏：HUD 竖排，占满左列 */
+.layout-wide .hud {
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: var(--sp-2);
+  padding: 10px;
+}
+
+/* 窄屏：HUD 横排一条，占满整行 */
+.layout-narrow .hud {
+  width: 100%;
+}
+
+.hud-status {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  white-space: nowrap;
+  /* 同样允许收缩：状态文案变长时不能把 HUD 撑宽（窄屏会出横向滚动条） */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/**
+ * 房间码 —— 只给对局双方看（观战者看不到）。
+ *
+ * 邀请房的码在大厅列表里是不显示的，房主要把码告诉对手 ——
+ * 这里必须常驻可见，不能只靠建房时那条几秒就消失的 toast。
+ */
+.hud-code {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.hud-code strong {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--accent-strong);
+}
+
+.hud-players {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  /*
+   * min-width: 0 —— 玩家名字长的时候，这一块**必须能收缩**。
+   * 它是 `.hud`（flex 容器）的子项，默认 `min-width: auto` = 内容的最小宽度，
+   * 于是名字一长就把 HUD 撑宽（实测：HUD 列只有 260px，玩家行却量到 430px），
+   * 窄屏时整页出横向滚动条、「再来一局」按钮被挤出屏幕。
+   */
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 宽屏：左列窄，上下叠着放两个玩家 */
+.layout-wide .hud-players {
+  flex-direction: column;
+  /*
+   * **不能是 wrap**。
+   * 多行 flex 容器里，每条 flex line 的交叉尺寸由**该行内容**决定，
+   * 而不是容器宽度 —— 于是 `align-items: stretch` 失效，玩家行会被内容撑到
+   * 431px（实测），比 260px 的 HUD 列宽出一截，名字也不截断。
+   * 改成 nowrap（单列单行）之后，行宽 = 容器宽，名字才会走省略号。
+   */
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+/* 条里的一行要紧凑 —— 整条只有一行高 */
+.hud-players .player-row {
+  padding: 2px 9px;
+  gap: 10px;
+  /*
+   * min-width: 0 —— flex 项默认 `min-width: auto`（= 内容的最小宽度），
+   * 玩家名字一长，这一行就**不肯收缩**：
+   *   窄屏时两行并排放不下 → 换成上下堆叠 → 行宽超出 HUD → 整页出横向滚动条，
+   *   「再来一局」按钮还会被挤出屏幕（实测：视口 430px，页面宽 463px，按钮右缘 453px）。
+   * 允许收缩之后，名字走省略号截断（`.player-row .name`），行宽始终在容器内。
+   */
+  min-width: 0;
+  max-width: 100%;
+}
+
+.hud-players .player-row .who {
+  font-size: var(--fs-sm);
+}
+
+.hud .clock {
+  font-size: var(--fs-md);
+  padding: 1px 7px;
+}
+
+.hud-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 没有按钮时（比如观战中）不要留一条空行 */
+.hud-actions:empty {
+  display: none;
+}
+
+/* ---------- 玩家行 ---------- */
+
+.players {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/*
+ * 玩家行现在是**竖排**：上面一行是「名字 + 棋钟」，
+ * 下面（如果有战利品）是**吃掉的对方棋子**。
+ *
+ * 为什么要改成竖排：战利品要显示在**这一方自己那行**的下方
+ * （国际象棋惯例），横排放不下 15 颗棋子，也放不下「名字 + 棋子」两串。
+ */
+.player-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 9px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color 0.2s,
+    background 0.2s;
+}
+
+/* 原来那一行（名字 / 棋钟 / 「再来一局」）—— 布局保持不变 */
+.player-row .row-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-width: 0;
+  /*
+   * **允许换行** —— 一行放不下「名字 + 状态标记 + 棋钟 + 再来一局」时，
+   * 让右边那组落到第二行。
+   *
+   * 为什么不能硬挤：HUD 列只有 260px，超时那一行同时有
+   * 「已超时」标记、棋钟和「再来一局」按钮 —— 全挤在一行的话，
+   * 名字会被压成**一个字**（`text-overflow: ellipsis` 也没用，连省略号都放不下）。
+   * 名字认不出来，比多一行严重得多。
+   */
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/*
+ * 战利品带：这一方吃掉的对方棋子。
+ *
+ * 一行放不下就换行（最多 15 颗 = 对方全军覆没）——
+ * 但**不能**让它把玩家行撑得太高：窄屏下 HUD 会跟着长高，
+ * 棋盘就被挤小了（`planStageLayout` 的 `STACK_EXTRA_H` 算的就是这块）。
+ */
+.player-row .captured-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px 4px;
+  min-width: 0;
+  /* 左边缘和上面的名字行对齐（名字行左边是 11px 的方块，这里补回来） */
+  padding-left: 11px;
+}
+
+.player-row .captured-strip .cap {
+  display: block;
+  flex: 0 0 auto;
+  /*
+   * 一层很轻的投影 —— 白棋是**浅色**的，落在浅色卡片上轮廓会糊掉。
+   * `drop-shadow` 跟着 SVG 的**不透明部分**走，所以一圈都有效（不像 box-shadow）。
+   */
+  filter: drop-shadow(0 1px 1.5px rgba(17, 26, 36, 0.5));
+}
+
+/**
+ * **落子权标记** —— 全站签名元素，只在这一处出现。
+ *
+ * 一条 3px 靛蓝竖条 + 一枚 6px 靛蓝实心方块，贴在**当前该走棋的那一方**的行上。
+ *
+ * 为什么不复用「高亮边框」：边框高亮在整站到处都在用（选中态、激活态…），
+ * 不构成签名。方块 + 竖条的组合**只**在这里出现，别处复用就稀释了。
+ */
+.player-row.turn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.player-row.turn::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+.player-row .who {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  /*
+   * **名字至少留 4 个字**（原来是 0 = 可以被压成一个字）。
+   *
+   * 配合 `.row-main` 的换行：右边那组放不下就换到第二行，
+   * 名字不会被挤没。
+   */
+  min-width: 4em;
+}
+
+/** 方块 = 轮次标识（白方空心描边、黑方实心） */
+.player-row .piece-dot {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  border: 1.5px solid var(--ink-2);
+  background: var(--card);
+}
+
+.player-row .piece-dot.dark {
+  background: var(--ink-2);
+  border-color: var(--ink-2);
+}
+
+.player-row.turn .piece-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: turn-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes turn-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.player-row .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-row .offline {
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+
+/* 「已超时」标记 —— 标的是**状态**（这一方已经判负），不是「这局结束了」 */
+.player-row .badge.timeout {
+  color: var(--danger);
+  background: rgba(180, 52, 31, 0.1);
+}
+
+/*
+ * 「再来一局」按人显示在**各自那一行**里 —— 不是 HUD 里一个全局按钮。
+ *
+ * .row-tail 把「棋钟 + 再来一局」收成右边一组：
+ * 棋钟还在原来的位置（最右），按钮排在它左边，行不会因为多一个按钮而散架。
+ */
+.player-row .row-tail {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  /*
+   * 换行到第二行时靠右 ——
+   * `margin-left: auto` 把自动空间吃掉，同一行时效果和 `space-between` 一样。
+   */
+  margin-left: auto;
+}
+
+/* 行内的「再来一局」要比通用小按钮更紧凑 —— 玩家行只有一行高 */
+.hud-players .rematch-btn {
+  padding: 2px 9px;
+  font-size: var(--fs-xs);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+/* 已申请：不可点的状态标记（文字用 --text-dim，在 --bg-elevated 上 6.9:1） */
+.rematch-voted {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.clock {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+}
+
+.clock.low {
+  color: var(--danger);
+  border-color: rgba(180, 52, 31, 0.4);
+}
+
+.clock.running {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+/*
+ * 超时（时间是负数，比如 `-1:23`）—— 判负了，但**棋还能继续下**。
+ *
+ * 必须排在 `.clock.running` **之后**：两者权重相同（0,2,0），后写的赢。
+ * 判负的一方往往正是「轮到他走」的那一方 —— 要是被 `.clock.running`
+ * 的强调色盖住，超时红就看不见了。
+ */
+.clock.over {
+  color: var(--danger);
+  border-color: rgba(180, 52, 31, 0.4);
+}
+
+.badge {
+  font-size: var(--fs-xs);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(63, 79, 99, 0.09);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ---------- 聊天块：标题 + 记录 + 输入 + 快捷聊天 ---------- */
+
+/*
+ * 聊天块**常驻**（宽屏在右列，窄屏在棋盘下方一条）。
+ * 记录区、输入框一直看得见 —— 不用点开。
+ */
+.rail-chat {
+  position: relative; /* 未读角标挂在右上角 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.rail-chat:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/**
+ * 未读角标：对方发来新消息、而聊天框没打开时，挂在「聊天」按钮右上角。
+ *
+ * 红底白字（对比度 ≈ 4.9:1，过 AA），
+ * 用 2px 同色描边从按钮边缘「浮」出来，压在棋盘上也认得出。
+ */
+.chat-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  border: 2px solid var(--bg-deep);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+
+.rail-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.rail-quick {
+  display: flex;
+  gap: 6px;
+}
+
+/* 宽屏：右列底部，六颗按钮排成 3×2 */
+.layout-wide .rail-quick {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+/*
+ * 窄屏：棋盘下方**一行** —— 「聊天」按钮 + 快捷聊天（不换行）。
+ *
+ * 宽度不够时横向滚动（而不是换行 —— 换行就变成两行，
+ * 「一行放下聊天和快捷聊天」这个前提就没了）。
+ */
+.layout-narrow .rail-quick {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.layout-narrow .rail-quick::-webkit-scrollbar {
+  display: none;
+}
+
+/* 窄屏快捷按钮不参与压缩，否则字会被挤成竖排 */
+.layout-narrow .rail-quick-btn {
+  flex: 0 0 auto;
+}
+
+.rail-quick-btn {
+  padding: 7px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  text-align: center;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.rail-quick-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+/*
+ * 按住连点时的**冷却态**。
+ *
+ * 私信面板的快捷短语有 1.2 秒的发送间隔（`DM_SEND_MIN_INTERVAL_MS`）——
+ * 冷却期间按钮是灰的、按不动。:disabled 的规则必须**排在 :hover 后面**：
+ * 同样的优先级下，后写的赢 —— 否则灰按钮一碰还会变成强调色。
+ */
+.rail-quick-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
+.rail-quick-btn:disabled:hover {
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  border-color: var(--accent);
+}
+
+/* ---------- 聊天条（宽屏常驻 / 窄屏收进弹层） ---------- */
+
+/*
+ * 聊天记录：
+ * - **宽屏**：右列常驻一个大框，在文档流里（不是浮层），
+ *   所以**绝不遮住棋盘**；
+ * - **窄屏**：整块隐藏 —— 历史记录 / 输入框 / 发送按钮全在点「聊天」弹出的
+ *   弹层里，底下那行只留「聊天」按钮 + 快捷聊天。
+ */
+.chat-strip {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-2);
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  /* 同 .hud：紧贴棋盘上方时投影会盖到棋盘顶，不能要 */
+  box-shadow: none;
+}
+
+/* 宽屏：右列竖排 —— 标题在上，记录区长大，输入框在底 */
+.layout-wide .chat-strip {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 10px;
+}
+
+/*
+ * 宽屏：右列的聊天记录框。
+ *
+ * **记录区不设固定上限** —— 它跟着右列一起长（`flex: 1`）。
+ * 这样输入框和发送按钮才会**贴着面板下沿**（用户 2026-11-13 报过：
+ * 记录区被写死 `max-height: 525px` 封了顶，右列比它高出来的那截全变成空白，
+ * 输入框被顶在半空，下面空一大片 —— 面板里就那么一块 525px，
+ * 剩下的高度白白浪费在「输入框悬在半空」上）。
+ *
+ * 页面**不被顶出滚动条**靠的是另外三样，缺一样都不行：
+ *   ① 右列 `.col-chat` 的 `max-height: var(--board-vh)` —— **唯一**的高度上限；
+ *   ② `.chat-strip` 的 `flex: 1` + `min-height: 0` —— 不许被内容撑高；
+ *   ③ 记录区自己的 `min-height: 0` + `overflow-y: auto` —— 内容多了在它内部滚。
+ * 记录区内容变多时**只在它内部滚动**（门禁 G21 守着这条，G30 守着「输入框贴底」）。
+ */
+.layout-wide .chat-strip .chat-log {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 注：右列的高度上限只有**一处** —— 上面的 `.layout-wide .col-chat`。
+ * 记录区**不设**自己的上限（见上），所以别在这里再补一条：
+ * 多一条上限，就多一次「输入框悬在半空」的机会。 */
+
+.layout-wide .chat-strip .chat-input-row {
+  width: 100%;
+}
+
+/*
+ * 窄屏：聊天记录**整块不常驻**。
+ *
+ * 底下那行只放得下「聊天」按钮 + 快捷聊天，
+ * 历史记录 / 输入框 / 发送按钮全在弹层里（点「聊天」才出来）。
+ *
+ * 隐藏的是**整块** `.chat-strip`（不是里面的子元素）——
+ * 少一层包裹，窄屏 DOM 里就不存在「半截记录区」这种东西。
+ */
+.layout-narrow .chat-strip {
+  display: none;
+}
+
+.chat-strip .chat-log {
+  flex: 1;
+  min-width: 0;
+  /* 纵向 flex 子项必须能收缩，否则内容一多就把容器（乃至整页）撑高 */
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  /*
+   * 千万别用 `justify-content: flex-end`。
+   *
+   * 它看着是「消息贴着底部」（其实是贴着**输入框那侧**），但内容一多就会出事：
+   * flex 容器把内容整体往**上**推，超出部分溢出到内容盒的**起始边** ——
+   * 那部分内容既被裁掉，又**滚不到**（scrollHeight 不会增长），
+   * 表现就是「聊天变多 → 只剩最后几条，而且记录区里根本没有滚动条」。
+   *
+   * 正确做法：`justify-content: flex-start` + 首项 `margin-top: auto` ——
+   * 有富余空间时首项的 auto 外边距把整块内容压到底部（还是贴着底部），
+   * 内容超出时 auto 归零，溢出落在**下方**，可以正常滚动。
+   */
+  justify-content: flex-start;
+  gap: 5px;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--text-dim);
+  scrollbar-width: thin;
+}
+
+/* 消息少的时候仍然贴着底部；内容多时 auto 外边距归零 → 溢出方向朝下，可滚动 */
+.chat-strip .chat-log > :first-child {
+  margin-top: auto;
+}
+
+/*
+ * 输入框那一行：**高度必须自适应**（`flex: 0 0 auto`）。
+ *
+ * 为什么不能写 `flex: 0 1 258px`：
+ * **`flex-basis` 跟着容器的轴走** —— `.chat-strip` 在宽屏是
+ * `flex-direction: column`，于是 `flex-basis: 258px` 落到的是**高度**，
+ * 输入框那一行被撑到 258px 高，里面的 `<input>` 和「发送」按钮
+ * 又被 `align-items: stretch` 拉满 —— 结果输入框有 258px 高，
+ * 一只输入框比整块聊天区还高（实测：输入框 223×258、按钮 48×258）。
+ *
+ * 这条 258px 当初是给**窄屏横排**的聊天带留的（那时 `.chat-strip` 是 row，
+ * `flex-basis` 作用于宽度）。改版把窄屏聊天收进弹层、宽屏聊天改成竖排之后，
+ * 同一个数字的**轴变了**，就变成了撑高输入框的元凶。
+ *
+ * 现在：高度交给内容（`flex: 0 0 auto`），宽度在宽屏由
+ * `.layout-wide .chat-strip .chat-input-row { width: 100% }` 给。
+ */
+/*
+ * 只有**一道**网：把行高交给内容（`flex: 0 0 auto`）。
+ *
+ * 不要再加 `align-items: center` / `align-self: center` 之类「让子项不跟着行高拉伸」的保险 ——
+ * 那会让「行高异常」这件事**在界面上完全看不出来**：
+ * 输入框照样 33px，门禁量输入框就永远量不到问题。
+ * 行高该由 `flex` 说了算，输入框被拉高就是真事故，直接露出来。
+ */
+.chat-strip .chat-input-row {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 258px;
+  display: flex;
+  gap: 7px;
+}
+
+/* ---------- 弹幕（快捷聊天） ---------- */
+
+/**
+ * 弹幕从屏幕右上方飘向左方，飘完淡出。
+ *
+ * 时长必须和 page.tsx 里的 DANMAKU_LIFE_MS 对上（6s）——
+ * CSS 管动画、JS 管移除，两者差一点点就会出现「淡出前突然消失」。
+ */
+.danmaku-layer {
+  /*
+   * 绝对定位在**棋盘区**内（.board-area 是 position: relative）。
+   *
+   * 为什么不是 fixed 贴着视口顶部：那样弹幕会从棋盘上方的信息栏背后飘过去，
+   * 前两条轨道正好被常驻的信息栏挡住。放进棋盘区就只飘棋盘这一片。
+   */
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 52%;
+  /*
+   * z-index 12 —— 必须**低于**信息栏（20）。
+   * 之前是 40，弹幕会把 HUD 整块盖住，玩家正要点「认输 / 提议和棋」时按钮被飘走。
+   */
+  z-index: 12;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.danmaku-item {
+  position: absolute;
+  left: 0;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+  animation: danmaku-fly 6s linear forwards;
+}
+
+.danmaku-item b {
+  color: var(--accent-strong);
+}
+
+@keyframes danmaku-fly {
+  0% {
+    opacity: 0;
+    transform: translateX(100vw);
+  }
+  6% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+}
+
+/* ---------- 2D 棋盘 ---------- */
+
+/**
+ * 2D 棋盘是真方形：宽度取「所在列宽」与「可用视口高度」中的较小者，
+ * 高度由 aspect-ratio 推导，保证不出现纵向滚动。
+ */
+.board2d {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  user-select: none;
+  /*
+   * 拖拽走子要按住棋子 —— 浏览器默认会把这种手势当成「滚动页面」。
+   * `touch-action: none` 让触摸设备上也能拖（3D 画布本来就是这个设置，
+   * 两块棋盘的行为保持一致）。
+   */
+  touch-action: none;
+}
+
+.square {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 0.12s;
+}
+
+.square.light {
+  background-color: var(--bg-board-light);
+  background-image: var(--wood-light);
+  background-size: 320% 320%;
+  background-position: var(--tex-pos, 0% 0%);
+}
+
+.square.dark {
+  background-color: var(--bg-board-dark);
+  background-image: var(--wood-dark);
+  background-size: 320% 320%;
+  background-position: var(--tex-pos, 0% 0%);
+}
+
+.square.clickable {
+  cursor: pointer;
+}
+
+.square.clickable:hover {
+  filter: brightness(1.12);
+}
+
+/** 上一步：琥珀色（与「引擎建议」的靛蓝箭头区分） */
+.square.lastmove {
+  box-shadow: inset 0 0 0 100px rgba(217, 147, 13, 0.42);
+}
+
+/** 被将军的格子：朱砂 */
+.square.checked {
+  box-shadow: inset 0 0 0 100px rgba(180, 52, 31, 0.5);
+}
+
+.square.selected {
+  box-shadow:
+    inset 0 0 0 100px rgba(217, 147, 13, 0.55),
+    inset 0 0 0 3px rgba(255, 250, 240, 0.95);
+}
+
+.square .coord {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.square .coord.file {
+  right: 4px;
+  bottom: 2px;
+}
+
+.square .coord.rank {
+  left: 4px;
+  top: 2px;
+}
+
+.square.light .coord {
+  color: var(--bg-board-dark);
+}
+
+.square.dark .coord {
+  color: var(--bg-board-light);
+}
+
+.piece-layer {
+  position: absolute;
+  inset: 0;
+  /*
+   * z-index 2 —— 走子箭头是 z-index 1，所以箭头**垫在棋子下面**：
+   * 箭头不遮挡棋子，棋子压在箭头上的那一截正好指向它的来路。
+   */
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ---------- 2D 走子箭头 ---------- */
+
+/**
+ * 上一步的走子箭头：画在格子上的扁平箭头。
+ *
+ * viewBox 是 0 0 8 8 —— **一个单位就是一格**，所以箭头的尺寸
+ * 和 3D 用的是同一套（src/lib/moveArrow.ts）。
+ */
+.move-arrow {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.move-arrow polygon {
+  fill: var(--amber);
+  fill-opacity: 0.62;
+  stroke: rgba(90, 58, 30, 0.45);
+  stroke-width: 0.03;
+  stroke-linejoin: round;
+}
+
+.piece {
+  position: absolute;
+  width: 12.5%;
+  height: 12.5%;
+  transition:
+    left 0.22s cubic-bezier(0.22, 0.61, 0.36, 1),
+    top 0.22s cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 0.18s;
+  will-change: left, top;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.piece.animating {
+  z-index: 5;
+}
+
+/*
+ * 正在被拖动的棋子。
+ *
+ * `transition: none` —— 拖动时必须**立刻**跟手，
+ * 留着 0.18s 的 transform 过渡会让棋子「追着」鼠标跑，手感是黏的。
+ * 松手取消时 `.dragging` 被摘掉，transform 回到 none，
+ * 那 0.18s 的过渡正好用来让棋子**滑回原格**。
+ *
+ * `z-index: 5` —— 拖着的棋子要压在其他棋子和落点提示上面。
+ */
+.piece.dragging {
+  z-index: 5;
+  transition: none;
+  cursor: grabbing;
+}
+
+.piece img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(45, 32, 16, 0.32));
+}
+
+/*
+ * 亮色主题下不能再压暗黑棋：原来亮度压到 32%，
+ * 黑棋在深色格上直接糊成一团黑，看不出是什么子。
+ * 现在靠棋子本身的浅色描边区分（见 PieceGlyph 的 PALETTE）。
+ */
+.piece.black img {
+  filter: drop-shadow(0 2px 3px rgba(45, 32, 16, 0.38));
+}
+
+/* 落点提示 */
+.hint-dot {
+  position: absolute;
+  width: 26%;
+  height: 26%;
+  border-radius: 50%;
+  background: rgba(40, 28, 12, 0.38);
+  pointer-events: none;
+}
+
+.hint-ring {
+  position: absolute;
+  width: 84%;
+  height: 84%;
+  border-radius: 50%;
+  border: 5px solid rgba(170, 30, 26, 0.78);
+  pointer-events: none;
+}
+
+/* ---------- 3D 棋盘 ---------- */
+
+/**
+ * 3D 画布：比例与棋盘在默认机位下的投影一致（见 :root 的 --board3d-aspect）。
+ * 宽度取「所在列宽」与「可用高度 × 比例」中的较小者，
+ * 高度由 aspect-ratio 推导 —— 棋盘既能撑满画布宽度，也不会超出视口高度。
+ */
+.board3d-wrap {
+  width: min(100%, calc(var(--board-vh) * var(--board3d-aspect)));
+  aspect-ratio: var(--board3d-aspect) / 1;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--board3d-bg);
+  box-shadow:
+    0 18px 50px rgba(20, 32, 48, 0.22),
+    0 0 0 8px var(--board-frame);
+}
+
+.board3d-wrap canvas {
+  display: block;
+  touch-action: none;
+}
+
+/* ---------- 走子记录 ---------- */
+
+/* ---------- 聊天 ---------- */
+
+/* 消息条目（消息条里的每一行） */
+/*
+ * 每条消息**换行完整显示**，不再单行 + 省略号截断。
+ *
+ * 之前 `white-space: nowrap` + `text-overflow: ellipsis` 让长消息只剩一个尾巴，
+ * 窄屏记录区又只有 38px 高 —— 挤在一起完全看不了。
+ */
+.chat-log .msg {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.chat-log .msg b {
+  color: var(--accent-strong);
+  font-weight: 600;
+  margin-right: 5px;
+}
+
+.chat-log .msg.sys {
+  color: var(--text-faint);
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 7px;
+}
+
+/*
+ * 观战者的聊天区提示。
+ *
+ * 观战的人**不能打字聊天**（服务端也拒收），只能用快捷聊天。
+ * 这个限制要**写在界面上** —— 不能让人点了没反应才发现。
+ */
+.chat-spectator-note {
+  padding: 8px 0 0;
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+/* ---------- 聊天记录弹层（窄屏点「聊天」展开） ---------- */
+
+/*
+ * 聊天框：窄屏下点「聊天」弹出来的大框。
+ *
+ * 位置：贴屏幕**底部**（聊天条就在下面，展开时视线不用移），
+ * 宽度 min(560px, 92vw)，高度最高 62vh —— 足够看清一屏对话。
+ * 遮罩复用升变弹窗那套 `.overlay`（z-index 300），点外面收起。
+ */
+.chat-overlay {
+  align-items: flex-end;
+  padding-bottom: 72px;
+}
+
+.chat-panel {
+  width: min(560px, 92vw);
+  max-width: 100%;
+  /* 固定高度（不跟着消息条数变）—— 弹出来就是个像样的框，消息在里面滚动 */
+  height: min(62vh, 520px);
+  max-height: min(62vh, 520px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.chat-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 记录区：可滚动，每条消息换行完整显示 */
+.chat-panel-log {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  color: var(--text-dim);
+  scrollbar-width: thin;
+}
+
+.chat-panel-log .msg {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.chat-panel-log .msg b {
+  color: var(--accent-strong);
+  font-weight: 600;
+  margin-right: 5px;
+}
+
+.chat-panel-log .msg.sys {
+  color: var(--text-faint);
+}
+
+.chat-panel-foot {
+  display: flex;
+  gap: 7px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.chat-panel-foot .input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: var(--fs-sm);
+}
+
+.chat-input-row .input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: var(--fs-sm);
+}
+
+/* ---------- 棋谱抽屉 ---------- */
+
+/*
+ * 「棋谱」按钮挂在**聊天快捷按钮的右边**（用户拍板）。
+ *
+ * 所以快捷聊天和棋谱按钮要并排在同一行里：
+ *   - 快捷聊天占剩余空间（宽屏是 3×2 网格，窄屏是横向滚动的一条）；
+ *   - 棋谱按钮**不参与压缩**（flex: 0 0 auto）——
+ *     它的文字不能被挤成竖排。
+ */
+.rail-quick-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  /*
+   * min-width: 0 —— **必须写**。
+   *
+   * 这一行是 .col-chat（窄屏时是 flex row）的子项，里面是
+   * 「快捷聊天（自己横向滚的容器）」+「棋谱按钮（不参与压缩）」。
+   *
+   * flex 子项的默认 min-width 是 auto = **min-content 尺寸**，
+   * 不写 0 的话这一行就压不下去：它的 min-content 被快捷聊天的内容宽度撑住，
+   * 于是在 430px 手机上整行宽 425px → 页面被撑到 513px → **横向溢出**。
+   * （.rail-quick 自己虽然写了 min-width: 0，但那只管它自己；
+   *   父级这一行的 automatic minimum size 照样是按内容算的。）
+   */
+  min-width: 0;
+}
+
+.rail-quick-row .rail-quick {
+  /*
+   * flex-basis 0：让快捷聊天**占满剩余宽度**而不是按内容宽度撑开，
+   * 否则宽屏的 3×2 网格会被压缩成一列。
+   * （`flex: 1 1 auto` 的 basis 是 auto = 内容宽度，不填满。）
+   */
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+/* 棋谱按钮上的着法数（走过的步数） */
+.notation-count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 窄屏下快捷聊天自己横向滚动，棋谱按钮钉在右边不动 */
+.layout-narrow .rail-quick-row .rail-notation-btn {
+  flex: 0 0 auto;
+}
+
+.rail-notation-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.rail-notation-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.rail-notation-btn.open {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+/*
+ * 棋谱抽屉 —— 从**右侧**滑出来。
+ *
+ * 样式与聊天弹层**同一套**（同样的底色 / 边框 / 圆角 / 阴影 / 头部），
+ * 只是方向不同：聊天是底部弹层，棋谱是右侧抽屉。
+ * 底部带「复制 PGN」按钮。
+ */
+.notation-overlay {
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
+}
+
+.notation-panel {
+  width: min(360px, 92vw);
+  max-width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: notation-slide-in 0.18s ease-out;
+}
+
+@keyframes notation-slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.notation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 着法列表：按「回合号 白着 黑着」一行行排 */
+.notation-list {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-dim);
+  scrollbar-width: thin;
+}
+
+.notation-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.notation-row .no {
+  min-width: 26px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.notation-row .san {
+  min-width: 54px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.notation-row .san.empty {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.notation-empty {
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+  padding: 8px 0;
+}
+
+.notation-foot {
+  display: flex;
+  gap: 7px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---------- 视图切换 ---------- */
+
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.view-toggle button {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 7px 14px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.06em;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.view-toggle button:hover {
+  color: var(--accent-strong);
+}
+
+.view-toggle button.active {
+  /*
+   * 深色字压在中棕底上只有 3.27:1（AA 正文要 4.5:1），看着就是"糊"在按钮里。
+   * 改用与 .btn.primary 同一套：--accent-strong 底 + 白字 → 8.8:1。
+   */
+  background: var(--accent-strong);
+  color: #ffffff;
+}
+
+/* ---------- 升变选择 ---------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  /* 亮色主题：遮罩别压太黑，否则弹窗之外的页面反而更暗 */
+  background: rgba(30, 42, 60, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  animation: fade-in 0.15s ease-out;
+}
+
+.promotion-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+.promotion-box p {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-md);
+  color: var(--text-dim);
+}
+
+.promotion-options {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+/*
+ * 升变选项的背景是一块**迷你棋盘**。
+ *
+ * 之前是深色底 + 深色棋子 → 整个弹窗糊成一片黑，看不出选的是哪个子。
+ * 现在弹窗本身是白底，选项再给一个棋盘底：
+ * 白棋落在深格上、黑棋落在浅格上，两种颜色都读得清。
+ */
+.promotion-options button {
+  width: 62px;
+  height: 62px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background:
+    conic-gradient(
+      var(--bg-board-dark) 25%,
+      var(--bg-board-light) 0 50%,
+      var(--bg-board-dark) 0 75%,
+      var(--bg-board-light) 0
+    )
+    0 0 / 16px 16px;
+  padding: 5px;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.promotion-options button:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.promotion-options img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------- 终局结果卡（浮在棋盘正中） ---------- */
+
+/*
+ * 浮在**棋盘区**上，**不占文档流**。
+ *
+ * 为什么不能像原来那样插在棋盘**上面**：
+ *   插在文档流里的元素一出现就把棋盘**往下顶** —— 棋盘、HUD、聊天
+ *   全被挪了位置（用户原话：「这个将死的提示是突然出现的，
+ *   会导致页面中其他元素的位置发生改变，这个不好」）。
+ *   绝对定位之后，它出现时**什么都不动**，只有这张卡自己冒出来。
+ *
+ * pointer-events: none —— 这张卡不吃鼠标事件，
+ * 想点底下的棋盘照样点得到（复盘时它整个让位，但规则统一）。
+ *
+ * 层级：14 —— 压在棋盘（0~5）之上，弹幕（12）之上，HUD（20）之下。
+ */
+.result-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 14;
+  pointer-events: none;
+}
+
+.result-card {
+  padding: 12px 26px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  box-shadow: 0 12px 32px rgba(20, 32, 48, 0.26);
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--accent-strong);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.spec-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(47, 94, 168, 0.12);
+  color: var(--accent-strong);
+  font-size: var(--fs-xs);
+}
+
+/* ---------- 右侧浮层提示（认输确认 / 求和 / 悔棋） ---------- */
+
+/*
+ * 固定贴在**右侧**，且**不占文档流**。
+ *
+ * 为什么不能往页面里插一条文字条（原来「对方提议和棋」就是这么做的）：
+ *   插进文档流的元素会把下面的内容**往下顶** —— 提示一多、聊天一长，
+ *   页面就被顶高，冒出**整页滚动条**，棋盘就看不完了
+ *   （用户原话：「突兀增加文本让页面有可能出现滚动条，这个不好」）。
+ *
+ * `position: fixed` 的浮层没有这个问题：它不参与文档流，页面高度完全不受影响。
+ */
+.side-prompts {
+  position: fixed;
+  right: 16px;
+  top: 84px;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  width: min(320px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.side-prompt {
+  pointer-events: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.side-prompt-danger {
+  border-color: rgba(180, 52, 31, 0.45);
+}
+
+.side-prompt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: 6px;
+}
+
+.side-prompt-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 倒计时：过了时限显示「已超时」（服务端同时会自动拒绝） */
+.side-prompt-countdown {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.side-prompt-countdown.expired {
+  color: var(--danger);
+}
+
+.side-prompt-body {
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.side-prompt-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: 10px;
+}
+
+.side-prompt-actions .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---------- 设置弹窗 ---------- */
+
+/*
+ * 设置是**浮层**：position: fixed，不占文档流 ——
+ * 打开设置不会把页面顶出纵向滚动条（和「聊天记录弹层」一个道理）。
+ */
+.settings-overlay {
+  z-index: 320;
+}
+
+.settings-panel {
+  /*
+   * `position: relative` 是底部渐隐层（::after）的定位基准 —— 它要贴着面板底边。
+   */
+  position: relative;
+  width: min(460px, 92vw);
+  max-width: 100%;
+  /*
+   * 90vh：设置项不少，84vh 会让内容溢出、把**底部留白整个裁在可视区外** ——
+   * 那样最后一行直接顶在面板下边缘，看着像「被裁坏了」。
+   * 780px 是上限：再高也没更多内容，只是让弹窗在大屏上更空。
+   */
+  max-height: min(90vh, 780px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+/*
+ * **底部渐隐** —— 内容比面板高时，裁切不能是「硬切」。
+ *
+ * 硬切读起来像内容被裁坏了；渐隐才读得出「下面还有，往下滚」。
+ *
+ * **高度必须和 `.settings-body` 的 `padding-bottom` 相等（都是 28px）**：
+ *   · 内容放得下 → 这一层正好盖在纯白的下留白上 → 看不见；
+ *   · 滚到底   → 同样盖在留白上 → 看不见；
+ *   · 只有「下面还有内容」时，它才盖在真实内容上 → 渐隐出现。
+ * 两个数字一旦对不上，就会出现「滚到底了底下还在发白」或者「留白被吃掉」。
+ */
+.settings-panel::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 28px;
+  /* transparent → 面板底色：浏览器按预乘 alpha 插值，不会出灰边 */
+  background: linear-gradient(to bottom, transparent, var(--bg-panel));
+  pointer-events: none;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 上下左右都要有呼吸；底部 28px 与上面渐隐层等高 */
+  padding: 12px 18px 28px;
+  scrollbar-width: thin;
+}
+
+/* 一行设置：左边标题+说明，右边控件 */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-row:last-child {
+  border-bottom: none;
+}
+
+.settings-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-hint {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/** 滑块右侧的数值（等宽数字） */
+.settings-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}
+
+/* 开关：原生 checkbox 藏起来，用一条轨道代替 */
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(63, 79, 99, 0.24);
+  transition: background 0.15s ease-out;
+  pointer-events: none;
+}
+
+.switch-track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  transition: transform 0.15s ease-out;
+}
+
+.switch input:checked + .switch-track {
+  background: var(--accent-strong);
+}
+
+.switch input:checked + .switch-track::after {
+  transform: translateX(18px);
+}
+
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/**
+ * 滑块 —— **接管原生外观**。
+ *
+ * `appearance: none` 之后，WebKit 与 Firefox 要分别写轨道和滑块，
+ * 否则 Firefox 会画出一条系统默认的凹槽。
+ */
+.settings-range {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 160px;
+  width: 160px;
+  height: 22px;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+.settings-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(63, 79, 99, 0.22);
+}
+
+.settings-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(20, 32, 48, 0.3);
+}
+
+.settings-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(63, 79, 99, 0.22);
+}
+
+.settings-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(20, 32, 48, 0.3);
+}
+
+.settings-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-range:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* 棋盘主题选择 */
+.settings-block {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.theme-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: 10px;
+}
+
+.theme-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease-out,
+    box-shadow 0.12s ease-out;
+}
+
+.theme-chip:hover {
+  border-color: rgba(47, 94, 168, 0.5);
+}
+
+.theme-chip.active {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.theme-preview {
+  display: grid;
+  grid-template-columns: repeat(2, 11px);
+  grid-auto-rows: 11px;
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+
+.theme-preview i {
+  display: block;
+}
+
+.theme-name {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.theme-chip.active .theme-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/*
+ * 棋子外观（风格 / 材质）选择。
+ *
+ * 与「棋盘配色」的 chip 同一套骨架，但预览位换成**真的棋子**——
+ * 风格和材质都是**看得见**的差别，文字说不清楚，缩略图一望即知。
+ */
+.piece-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: 10px;
+}
+
+.piece-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 10px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease-out,
+    box-shadow 0.12s ease-out;
+}
+
+.piece-chip:hover {
+  border-color: rgba(47, 94, 168, 0.5);
+}
+
+.piece-chip.active {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.piece-chip-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  /* 预览底色 = 棋盘的浅格色：棋子本来就长在这个底上，
+     换成别的底色会让人误判「这个风格在棋盘上是什么样」 */
+  background: #e8d5b0;
+  overflow: hidden;
+}
+
+.piece-chip-name {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.piece-chip.active .piece-chip-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/*
+ * 推荐下一步的指引箭头（辅助下棋）。
+ *
+ * 与「上一步走子箭头」(.move-arrow，琥珀) 区分开：
+ *   - 颜色：亮蓝 vs 琥珀色，一眼能分清是「建议」还是「已发生」；
+ *   - 亮度：建议箭头更淡 —— 它还没落子；
+ *   - 层级：压在走子箭头**上面**（z-index 3，棋子层是 2 —— 用 z-index 3 压住棋子也没问题，
+ *     但指引箭头是半透明的，压在棋子下面反而更清楚）。
+ */
+.hint-arrow {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  overflow: visible;
+  animation: hint-arrow-in 0.25s ease-out;
+}
+
+.hint-arrow polygon {
+  fill: var(--hint-blue);
+  fill-opacity: 0.42;
+  stroke: rgba(23, 62, 130, 0.55);
+  stroke-width: 0.03;
+  stroke-linejoin: round;
+}
+
+@keyframes hint-arrow-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 将军状态：状态文案要一眼看见 */
+.hud-status.check {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* ---------- 响应式：三断点 ----------
+ *
+ * 断点只管**间距与密度**，不动布局归属（布局归属由 planStageLayout 决定，
+ * 它看的是视口形状 + 分列后棋盘能不能变大）。
+ */
+
+@media (max-width: 1199px) {
+  .lobby-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 899px) {
+  :root {
+    --layout-gap: 12px;
+  }
+
+  .container {
+    padding: 0 12px;
+  }
+
+  .topbar {
+    gap: var(--sp-2);
+  }
+
+  .card {
+    padding: var(--sp-4);
+  }
+
+  .lobby-grid {
+    gap: var(--sp-3);
+  }
+
+  /* 四个开局方式折成两列，别把按钮文字挤扁 */
+  .mode-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* 房间行窄屏下允许换行：名字一长，按钮就被挤出可视区 */
+  .room-row {
+    flex-wrap: wrap;
+  }
+
+  /* 工具栏拆成「标签行 + 操作行」两块，别挤在一行 */
+  .hud-actions {
+    width: 100%;
+  }
+}
+
+/* ---------- 大厅「在线名单」 ---------- */
+
+/*
+ * 顶栏的「已连接 · 在线 N」现在是个**按钮**：点开就是在线的人。
+ *
+ * 名单浮层挂在顶栏这一侧（不是居中弹窗）——
+ * 它是「顺手看一眼」的东西，不该挡住整个大厅。
+ */
+.topbar-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 状态点做成按钮：外观不变，但能点 */
+button.status-dot {
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+button.status-dot:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.online-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  /*
+   * z-index 高过 toast（500）—— **用户主动打开的面板 > 环境提示**。
+   *
+   * 两者都在右上角，浮层从顶栏底下落下来、toast 也在顶栏底下：
+   * 不抬高的话，刚进对局页弹出的那条提示会把「在线 N 人」这行盖掉。
+   */
+  z-index: 520;
+  width: min(280px, 78vw);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.online-head {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.online-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.online-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  color: var(--text);
+  /* 整行可点（左键 = 直接进私信），所以是 pointer 不是 default */
+  cursor: pointer;
+}
+
+.online-row:hover {
+  background: var(--bg-elevated);
+}
+
+.online-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/**
+ * 行尾那枚「气泡」按钮 —— **怎么发消息的说明书**。
+ *
+ * 以前靠一句「右键某个人 → 可以给他发消息」教用户；
+ * 现在改成图标：点一下就进私信，不用先知道「要右键」。
+ */
+.online-dm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.online-dm:hover {
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--accent-strong);
+}
+
+.online-you {
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text-dim);
+}
+
+.online-hint {
+  padding: 4px 9px 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* ---------- 右键菜单 ---------- */
+
+/*
+ * 名单里右键某人 → 这里弹出来。
+ * 定位用 fixed + 光标坐标（菜单要跟着右键的位置走）。
+ */
+.ctx-menu {
+  position: fixed;
+  /* 同上：用户点出来的菜单要压过环境提示（toast 500） */
+  z-index: 530;
+  min-width: 132px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ctx-item:hover {
+  background: var(--bg-elevated);
+  color: var(--accent-strong);
+}
+
+/*
+ * 「分享」菜单 —— 跟右键菜单同一套视觉语言，只是宽一点
+ * （两条菜单项各带一个图标 + 四个字）。
+ */
+.share-menu {
+  min-width: 168px;
+}
+
+/* ---------- 私信面板 ---------- */
+
+.dm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(17, 26, 36, 0.18);
+}
+
+.dm-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 80;
+  width: min(380px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.dm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dm-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-close {
+  margin-left: auto;
+}
+
+.dm-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dm-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 86%;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.dm-msg.me {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.dm-msg.them {
+  align-self: flex-start;
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.dm-msg-name {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.dm-msg-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.dm-log .msg.sys,
+.dm-list .msg.sys {
+  color: var(--text-faint);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.dm-foot {
+  display: flex;
+  /*
+   * 竖着排：上面是「邀请来这局」按钮（有房间时才有），
+   * 下面是快捷短语网格。两块都是**整行**，横排会把短语挤成两列。
+   */
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.dm-foot .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/*
+ * 私信底部的快捷短语区。
+ *
+ * 私信**没有输入框**，只有这几颗按钮 —— 3×2 网格，
+ * 和房间里快捷聊天的宽屏排布（`.layout-wide .rail-quick`）一样，
+ * 两处是同一套视觉语言。
+ */
+.dm-quick {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+/* ---------- 房间邀请（私信的第二种形态） ---------- */
+
+/*
+ * 「邀请来这局」按钮 —— 私聊底部，只有我在这局里时才出现。
+ *
+ * 整行一条（不是又一颗短语按钮）：它是**动作**，不是一句话。
+ */
+.dm-invite-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: var(--border-strong);
+}
+
+.dm-invite-send:hover {
+  border-color: var(--accent);
+}
+
+/* 冷却期间：和快捷短语一样按不动（邀请和私信共用一个限频桶） */
+.dm-invite-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dm-invite-send:disabled:hover {
+  border-color: var(--border-strong);
+}
+
+/*
+ * 私信里的**邀请卡片** —— 可点，点一下直接进房。
+ *
+ * 房间码用等宽字体放大：那是这张卡片上唯一需要被读准的东西。
+ */
+.dm-invite-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin-top: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dm-invite-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.dm-invite-code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--text);
+}
+
+.dm-invite-act {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff8ec;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+/*
+ * 跨房间的二次确认。
+ *
+ * 离开一局 = 判负 —— 代价要先摆在眼前，不能让人手滑就把当前这局判掉。
+ */
+.dm-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.dm-confirm-text {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.dm-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.dm-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dm-conv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dm-conv:hover {
+  border-color: var(--accent);
+}
+
+.dm-conv-name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dm-conv-last {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 私信按钮上的未读角标（跟聊天角标同一套） */
+.dm-btn {
+  position: relative;
+}
+
+/* ---------- 动效偏好 ---------- */
+
+/*
+ * 用户在系统里关了动效 → 所有过渡与关键帧一律停掉。
+ *
+ * 注意：这不是「锦上添花」—— 呼吸动效（落子权标记）本身**不是**信息，
+ * 去掉之后照样认得出谁该走；弹幕这种持续动画才是真的需要停。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==================================================================
+ * 教学练习页（/practice）
+ *
+ * 两个分区共用一套骨架：
+ *   左列（列表 / 工具）  |  中列（棋盘）  |  右列（讲解 / 状态）
+ *
+ * 布局归属用 `grid-template-areas` 写死，不靠「谁的 DOM 在前面」决定 ——
+ * 窄屏时教学分区要把棋盘提到最前（棋盘就是课程本身），
+ * 自由练习要把调色板提到最前（摆棋时手边得有工具）。
+ * ================================================================== */
+
+.practice-tabs {
+  display: flex;
+  grid-template-columns: none;
+  width: fit-content;
+  margin-bottom: var(--sp-4);
+}
+
+.practice-tabs .btn {
+  padding: 8px 18px;
+}
+
+.practice-grid {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 330px;
+  grid-template-areas: 'left board right';
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+.practice-col-left {
+  grid-area: left;
+}
+
+.practice-col-board {
+  grid-area: board;
+  min-width: 0;
+}
+
+.practice-col-right {
+  grid-area: right;
+}
+
+.practice-board-area {
+  padding: 0;
+}
+
+/* ---------- 课程列表 ---------- */
+
+.lesson-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lesson-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.lesson-row:hover {
+  background: var(--bg-elevated);
+}
+
+.lesson-row.active {
+  background: var(--accent-soft);
+}
+
+.lesson-row-tag {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.lesson-row.active .lesson-row-tag {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.lesson-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.lesson-row-name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.lesson-row-en {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 讲解面板 ---------- */
+
+.lesson-toggle {
+  margin: var(--sp-2) 0 var(--sp-1);
+}
+
+.lesson-step {
+  margin-top: var(--sp-3);
+}
+
+.lesson-step-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.lesson-san {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
+.lesson-progress {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.lesson-note {
+  margin: 6px 0 0;
+  font-size: var(--fs-md);
+  line-height: 1.65;
+  color: var(--text-dim);
+}
+
+.lesson-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--sp-3);
+}
+
+.lesson-points {
+  margin: var(--sp-3) 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lesson-points li {
+  font-size: var(--fs-md);
+  line-height: 1.65;
+  color: var(--text-dim);
+}
+
+/* ---------- 摆棋调色板 ---------- */
+
+.palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.palette-label {
+  flex: none;
+  width: 34px;
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+
+.palette-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.palette-chip {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+
+.palette-chip:hover {
+  border-color: var(--border-strong);
+}
+
+.palette-chip.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.palette-chip.tool {
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+}
+
+/* ---------- 读数行（状态，不是说明） ---------- */
+
+.practice-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.practice-readout:last-of-type {
+  border-bottom: none;
+}
+
+.practice-readout-label {
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+
+.practice-readout-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.practice-notation {
+  flex: none;
+  max-height: min(46vh, 360px);
+  padding: 0;
+}
+
+/* ---------- 大厅里的「教学练习」入口 ---------- */
+
+.entry-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+
+.entry-row:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-elevated);
+}
+
+.entry-row-mark {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.entry-row-label {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.entry-row-arrow {
+  margin-left: auto;
+  color: var(--text-faint);
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 1199px) {
+  .practice-grid {
+    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-areas:
+      'left board'
+      'right right';
+  }
+}
+
+@media (max-width: 899px) {
+  .practice-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'left'
+      'board'
+      'right';
+  }
+
+  /* 教学分区：棋盘就是课程本身，提到最前 */
+  .practice-grid.tab-lesson {
+    grid-template-areas:
+      'board'
+      'left'
+      'right';
+  }
+
+  .practice-notation {
+    max-height: 240px;
+  }
+}

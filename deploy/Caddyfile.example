@@ -1,0 +1,20 @@
+# 局域网国际象棋 —— Caddy 反向代理示例
+#
+# 装到：/etc/caddy/Caddyfile（追加进去）
+# 改完：systemctl reload caddy
+#
+# 为什么给这个：Caddy 默认就支持 WebSocket 反代，而且能自己签 HTTPS 证书 ——
+# 上面 nginx 那份要手工配的 Upgrade 头和超时，Caddy 全自动。
+# 只有一条机器的情况用 Caddy 最省事。
+
+chess.example.com {   # 改这里：你的域名
+    reverse_proxy 127.0.0.1:3000
+}
+
+# 用公网 IP 而不是域名的话，把上面换成：
+#
+# :80 {
+#     reverse_proxy 127.0.0.1:3000
+# }
+#
+# （没有域名就拿不到自动 HTTPS 证书，只能走 http 或者自己接证书。）

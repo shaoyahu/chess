@@ -1,0 +1,476 @@
+/**
+ * UCI over stdio 客户端 —— 用 Stockfish 这类外部引擎算着法。
+ *
+ * 为什么单独一个模块：Stockfish 说 UCI（不是我们自研引擎那套 JSON 协议），
+ * 而且它是**独立进程**。把它隔离在这里，上层（engine-pool / engine-worker）
+ * 就不用关心 UCI 的握手、`position fen ...`、`go`、`bestmove` 这些细节。
+ *
+ * 协议速记（Stockfish 19 实测）：
+ *   父 → 子：uci / isready / position fen <FEN> / go depth N | go movetime N / stop / quit
+ *   子 → 父：uciok / readyok / info depth ... score cp ... / bestmove e2e4 [ponder ...]
+ *
+ * 两条硬规矩：
+ *  1. stdout 里只有引擎自己的输出，**不要混入任何调试打印**（否则 bestmove 解析不出来）；
+ *  2. 每个请求都要能超时后兜底 —— 引擎卡住时不能让上层永久 hang。
+ */
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
+import path from 'node:path';
+import { createInterface, type Interface } from 'node:readline';
+
+/** 引擎的一次着法建议 */
+export interface UciBestMove {
+  /** UCI 着法字符串，例如 "e2e4" / "e7e8q" */
+  uci: string;
+  /** 从 UCI 字符串拆出来的 from / to / promotion */
+  from: string;
+  to: string;
+  promotion?: 'q' | 'r' | 'b' | 'n';
+  /** 引擎给出的分值（厘兵，走子方视角）；有 mate 时是 null */
+  scoreCp: number | null;
+  /** 引擎给出的着法深度 */
+  depth: number;
+  /** 引擎搜索过的节点数 */
+  nodes: number;
+}
+
+/** 搜索参数 */
+export interface UciSearchOptions {
+  /** 局面（完整 FEN，含轮到谁走） */
+  fen: string;
+  /** 时间预算（毫秒）；与 depth 二选一，优先 timeMs */
+  timeMs?: number;
+  /** 深度上限 */
+  depth?: number;
+  /** 每个请求的硬超时（毫秒）；缺省 timeMs + 10s */
+  timeoutMs?: number;
+}
+
+/** 引擎进程不可用 / 出错 */
+export class UciError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UciError';
+  }
+}
+
+/** 引擎不可用时的默认兜底超时余量 */
+const DEFAULT_TIMEOUT_SLACK_MS = 10_000;
+
+/**
+ * 把 "e7e8q" 拆成 from / to / promotion。
+ * 非法格式返回 null（不抛异常 —— 上层要的是「没有着法」，不是崩）。
+ */
+export function parseUciMove(uci: string): { from: string; to: string; promotion?: 'q' | 'r' | 'b' | 'n' } | null {
+  const m = /^([a-h][1-8])([a-h][1-8])([qrbn])?$/.exec(uci.trim());
+  if (!m) return null;
+  const out: { from: string; to: string; promotion?: 'q' | 'r' | 'b' | 'n' } = {
+    from: m[1],
+    to: m[2],
+  };
+  if (m[3]) out.promotion = m[3] as 'q' | 'r' | 'b' | 'n';
+  return out;
+}
+
+/**
+ * UCI 引擎的最小接口。
+ *
+ * 为什么要抽接口：Stockfish 的**限强着法选择带随机性**（同参数连跑三次结果都不同），
+ * 所以「限强有没有生效」不能靠「跑两遍比对着法」来判定 —— 那种判据天生 flaky。
+ * 抽一个接口出来，门禁就能注入**假引擎**，确定性地断言：
+ * 我们到底给引擎下了 UCI_LimitStrength / UCI_Elo 什么值、go 的 depth 是多少。
+ */
+export interface UciEngineLike {
+  /** 进程是否活着 */
+  readonly alive: boolean;
+  /** 启动并握手 */
+  start(timeoutMs?: number): Promise<void>;
+  /** 算一步着法 */
+  search(opts: UciSearchOptions): Promise<UciBestMove>;
+  /** 下发 setoption */
+  setOption(name: string, value: string | number): void;
+  /** 结束进程 */
+  terminate(): void;
+}
+
+/**
+ * 一个常驻的 UCI 引擎进程。
+ *
+ * 生命周期：spawn → uci 握手（等 uciok）→ isready（等 readyok）→ 之后就能反复
+ * position/go。每次 go 之前都要先 isready（UCI 规范要求，用于同步）。
+ */
+export class UciEngine implements UciEngineLike {
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private rl: Interface | null = null;
+  private readyPromise: Promise<void> | null = null;
+  /** 当前正在等 bestmove 的解算器 */
+  private pending: {
+    resolve: (mv: UciBestMove) => void;
+    reject: (err: Error) => void;
+    timer: NodeJS.Timeout;
+    scoreCp: number | null;
+    depth: number;
+    nodes: number;
+    /** 是否已经因为「找到杀棋」发过 stop */
+    mateStopped: boolean;
+  } | null = null;
+
+  constructor(
+    private readonly command: string,
+    private readonly args: string[] = [],
+  ) {}
+
+  /** 进程是否活着 */
+  get alive(): boolean {
+    return this.child !== null && this.child.exitCode === null && !this.child.killed;
+  }
+
+  /**
+   * 启动并完成握手。已启动时直接复用。
+   * @param timeoutMs 握手超时
+   */
+  async start(timeoutMs = 15_000): Promise<void> {
+    if (this.readyPromise) return this.readyPromise;
+    this.readyPromise = this.doStart(timeoutMs);
+    try {
+      await this.readyPromise;
+    } catch (err) {
+      this.readyPromise = null;
+      this.terminate();
+      throw err;
+    }
+  }
+
+  private doStart(timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let child: ChildProcessWithoutNullStreams;
+      try {
+        child = spawn(this.command, this.args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          shell: false,
+        });
+      } catch (err) {
+        reject(new UciError(`引擎启动失败: ${err instanceof Error ? err.message : String(err)}`));
+        return;
+      }
+      this.child = child;
+      this.rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+      this.rl.on('line', (line) => this.onLine(line));
+
+      // 引擎的 stderr 不参与协议，但要能被人看到
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        process.stderr.write(`[uci-engine] ${chunk}`);
+      });
+
+      let settled = false;
+      const finish = (err: Error | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err);
+        else resolve();
+      };
+      const timer = setTimeout(
+        () => finish(new UciError(`引擎握手超时（${timeoutMs}ms）`)),
+        timeoutMs,
+      );
+      if (typeof timer.unref === 'function') timer.unref();
+
+      child.on('error', (err) => {
+        this.rejectPending(new UciError(`引擎进程出错: ${err.message}`));
+        finish(new UciError(`引擎进程出错: ${err.message}`));
+      });
+      child.on('exit', (code, signal) => {
+        this.rejectPending(new UciError(`引擎进程已退出 (code=${code ?? 'null'} signal=${signal ?? 'null'})`));
+        this.child = null;
+        this.rl = null;
+        finish(new UciError(`引擎进程已退出 (code=${code ?? 'null'} signal=${signal ?? 'null'})`));
+      });
+
+      // 握手：uci → 等 uciok；isready → 等 readyok
+      let sawUciOk = false;
+      const onHandshakeLine = (line: string) => {
+        const t = line.trim();
+        if (t === 'uciok') {
+          sawUciOk = true;
+          this.write('isready');
+          return;
+        }
+        if (t === 'readyok' && sawUciOk) {
+          finish(null);
+        }
+      };
+      this.rl.on('line', onHandshakeLine);
+
+      this.write('uci');
+    });
+  }
+
+  /**
+   * 算一步着法。
+   * @param opts 局面与搜索参数
+   */
+  async search(opts: UciSearchOptions): Promise<UciBestMove> {
+    await this.start();
+    if (!this.alive || !this.child) {
+      throw new UciError('引擎进程不可用');
+    }
+
+    // UCI 规范：go 之前必须 isready 同步
+    await this.ready();
+    if (this.pending) {
+      throw new UciError('引擎上一次搜索还没结束');
+    }
+
+    const budget = opts.timeMs ?? 1000;
+    const hardTimeout = opts.timeoutMs ?? budget + DEFAULT_TIMEOUT_SLACK_MS;
+
+    return new Promise<UciBestMove>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending = null;
+        this.write('stop');
+        reject(new UciError(`引擎搜索超时（${hardTimeout}ms）`));
+      }, hardTimeout);
+      if (typeof timer.unref === 'function') timer.unref();
+
+      this.pending = { resolve, reject, timer, scoreCp: null, depth: 0, nodes: 0, mateStopped: false };
+
+      this.write(`position fen ${opts.fen}`);
+      // depth 与 movetime 可以**同时**给：引擎取先到的那个为准。
+      // 这不是随便写的 —— Stockfish 的限强（UCI_LimitStrength / UCI_Elo）
+      // **只在 go depth 下生效**：go movetime 走的是普通时间管理器，
+      // 限强形同虚设（实测：限强 1320 + go movetime 1000 与不限强给出同一个着法，
+      // 而限强 1320 + go depth 12 会给出明显不同的着法）。
+      // 所以「按难度限强」必须配 depth，上限时间用 movetime 兜底。
+      const depth = opts.depth !== undefined ? Math.max(1, Math.round(opts.depth)) : null;
+      const movetime = opts.timeMs !== undefined ? Math.max(1, Math.round(opts.timeMs)) : null;
+      if (depth !== null && movetime !== null) {
+        this.write(`go depth ${depth} movetime ${movetime}`);
+      } else if (depth !== null) {
+        this.write(`go depth ${depth}`);
+      } else if (movetime !== null) {
+        this.write(`go movetime ${movetime}`);
+      } else {
+        this.write('go movetime 1000');
+      }
+    });
+  }
+
+  /** 发送 setoption（如 UCI_LimitStrength / UCI_Elo / Threads） */
+  setOption(name: string, value: string | number): void {
+    this.write(`setoption name ${name} value ${value}`);
+  }
+
+  /** 结束进程 */
+  terminate(): void {
+    this.rejectPending(new UciError('引擎已关闭'));
+    if (this.rl) {
+      this.rl.close();
+      this.rl = null;
+    }
+    if (this.child) {
+      try {
+        this.child.stdin.write('quit\n');
+      } catch {
+        /* ignore */
+      }
+      this.child.kill();
+      this.child = null;
+    }
+    this.readyPromise = null;
+  }
+
+  /** 等引擎 readyok */
+  private ready(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (!this.child) {
+        reject(new UciError('引擎进程不可用'));
+        return;
+      }
+      const timer = setTimeout(() => reject(new UciError('引擎 ready 超时')), 10_000);
+      if (typeof timer.unref === 'function') timer.unref();
+      const onLine = (line: string) => {
+        if (line.trim() === 'readyok') {
+          clearTimeout(timer);
+          this.rl?.off('line', onLine);
+          resolve();
+        }
+      };
+      this.rl?.on('line', onLine);
+      this.write('isready');
+    });
+  }
+
+  /** 处理引擎输出的一行 */
+  private onLine(line: string): void {
+    const t = line.trim();
+    if (!t) return;
+
+    if (t.startsWith('info ')) {
+      // 只在有正在等待的搜索时收集分值信息
+      const p = this.pending;
+      if (!p) return;
+      const info = parseSearchInfo(t);
+      if (info.depth !== null) p.depth = info.depth;
+      if (info.nodes !== null) p.nodes = info.nodes;
+      if (info.scoreCp !== null) p.scoreCp = info.scoreCp;
+      if (isMateInfoLine(t)) {
+        p.scoreCp = null;
+        // 找到杀棋就别再往下虚搜了：SF 确认 mate 之后会**一路加深**，
+        // 把整个时间预算耗光（实测一步杀局面能搜到 depth 245），
+        // 结果就是「早就知道怎么杀了，却还要让玩家再等两秒」。
+        // UCI 规范：stop 之后引擎必须回 bestmove。
+        if (!p.mateStopped) {
+          p.mateStopped = true;
+          try {
+            this.write('stop');
+          } catch {
+            /* 引擎刚好退出了就算了 */
+          }
+        }
+      }
+      return;
+    }
+
+    if (t.startsWith('bestmove')) {
+      const p = this.pending;
+      if (!p) return;
+      this.pending = null;
+      clearTimeout(p.timer);
+      const parts = t.split(/\s+/);
+      const uci = parts[1] ?? '';
+      const parsed = parseUciMove(uci);
+      if (!parsed) {
+        p.reject(new UciError(`引擎返回了无法解析的着法: ${uci}`));
+        return;
+      }
+      p.resolve({
+        uci,
+        from: parsed.from,
+        to: parsed.to,
+        ...(parsed.promotion ? { promotion: parsed.promotion } : {}),
+        scoreCp: p.scoreCp,
+        depth: p.depth,
+        nodes: p.nodes,
+      });
+    }
+  }
+
+  /** 拒掉在途请求 */
+  private rejectPending(err: Error): void {
+    const p = this.pending;
+    if (!p) return;
+    this.pending = null;
+    clearTimeout(p.timer);
+    p.reject(err);
+  }
+
+  /** 往引擎 stdin 写一行 */
+  private write(line: string): void {
+    if (!this.child || !this.child.stdin.writable) {
+      throw new UciError('引擎进程不可用');
+    }
+    this.child.stdin.write(`${line}\n`);
+  }
+}
+
+/**
+ * 这一行 info 是不是「找到杀棋」。
+ *
+ * 抽成纯函数是为了能**确定性地**测它 —— 门禁直接喂行文本，
+ * 不用真的跑一次引擎（真跑一次 2.5 秒，而且不同引擎构建行为还不一样）。
+ */
+export function isMateInfoLine(line: string): boolean {
+  return /\bscore mate\b/.test(line);
+}
+
+/** 一条 info 行里能解析出来的搜索信息 */
+export interface UciSearchInfo {
+  /** 搜索深度（不是 seldepth！） */
+  depth: number | null;
+  /** 已搜索节点数 */
+  nodes: number | null;
+  /** 分值（厘兵，走子方视角）；mate 时为 null */
+  scoreCp: number | null;
+}
+
+/**
+ * 解析 UCI 的 info 行。
+ *
+ * 抽成纯函数是为了能**确定性地**测它 —— 门禁直接喂含 `seldepth` 的行，
+ * 断言 depth 取的是真 depth 而不是 seldepth。
+ *
+ * 注意：UCI 的 info 行里有 **seldepth**（选择性深度），
+ * 而 `seldepth` 本身就包含 `depth` 子串 —— 用 /depth (\d+)/ 会把
+ * seldepth 的值当成 depth（实测满血搜索报出 depth=245，实际 depth 只有 25）。
+ */
+export function parseSearchInfo(line: string): UciSearchInfo {
+  const t = line.trim();
+  const out: UciSearchInfo = { depth: null, nodes: null, scoreCp: null };
+  if (!t.startsWith('info ')) return out;
+
+  // depth 前面必须是空白或行首，避免匹配到 seldepth
+  const depth = /(?:^|\s)depth (\d+)/.exec(t);
+  if (depth) out.depth = Number(depth[1]);
+  const nodes = /\bnodes (\d+)/.exec(t);
+  if (nodes) out.nodes = Number(nodes[1]);
+  if (/\bscore mate\b/.test(t)) {
+    // mate 分值不当作 cp 用
+    out.scoreCp = null;
+    return out;
+  }
+  const score = /\bscore cp (-?\d+)/.exec(t);
+  if (score) out.scoreCp = Number(score[1]);
+  return out;
+}
+
+/**
+ * 找系统里的 Stockfish 可执行文件。
+ *
+ * 查找顺序：
+ *  1. 环境变量 STOCKFISH_PATH（用户显式指定，优先级最高）
+ *  2. PATH 里的 stockfish / stockfish-macos / stockfish-x86-64 等常见名字
+ *
+ * 找不到返回 null —— 调用方要准备好降级路径。
+ */
+export function findSystemStockfish(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = env.STOCKFISH_PATH;
+  if (explicit && explicit.trim()) return explicit.trim();
+
+  const names = ['stockfish', 'stockfish-macos', 'stockfish-mac', 'stockfish-x86-64'];
+  const dirs = (env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const name of names) {
+      const full = path.join(dir, name);
+      try {
+        accessSync(full, fsConstants.X_OK);
+      } catch {
+        continue; // 不是可执行文件就换下一个
+      }
+      // **npm 包的软链不算系统引擎**。
+      // npm 脚本会把 node_modules/.bin 塞到 PATH 最前面，
+      // 里面的 stockfish 是 npm 包（JS 版 Stockfish）的软链 ——
+      // 它比原生构建慢一截（实测 nps 88 万 vs 原生 430 万），
+      // 认成「系统引擎」就把优先级搞反了。
+      if (isNpmShim(full)) continue;
+      return full;
+    }
+  }
+  return null;
+}
+
+/**
+ * 这个可执行文件是不是 npm 包的软链（node_modules/.bin/xxx）。
+ *
+ * 判断依据是**解析后的真实路径**里有没有 node_modules ——
+ * 只看路径字符串会漏掉「别的目录里放了个指向 node_modules 的软链」这种情况。
+ */
+function isNpmShim(full: string): boolean {
+  const marker = `${path.sep}node_modules${path.sep}`;
+  try {
+    return realpathSync(full).includes(marker);
+  } catch {
+    return full.includes(marker);
+  }
+}

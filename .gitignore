@@ -1,0 +1,22 @@
+# 依赖
+node_modules/
+
+# 构建产物
+.next/
+.next-*/
+out/
+tsconfig.tsbuildinfo
+tsconfig.*.tsbuildinfo
+
+# 运行时数据（房间存档）
+.data/
+
+# 门禁产物（可重新生成，不入库）
+artifacts/
+
+# 系统
+.DS_Store
+*.log
+
+# 本地环境
+.env*.local

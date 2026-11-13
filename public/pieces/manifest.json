@@ -1,0 +1,808 @@
+{
+  "generator": "scripts/generate-pieces.ts",
+  "note": "本项目原创素材；直接渲染 PieceGlyph 本体，与棋盘运行时不可能漂移",
+  "axes": {
+    "style": [
+      {
+        "id": "classic",
+        "label": "经典"
+      },
+      {
+        "id": "cartoon",
+        "label": "卡通"
+      },
+      {
+        "id": "pixel",
+        "label": "像素"
+      },
+      {
+        "id": "doodle",
+        "label": "涂鸦"
+      }
+    ],
+    "material": [
+      {
+        "id": "wood",
+        "label": "木质"
+      },
+      {
+        "id": "metal",
+        "label": "金属"
+      },
+      {
+        "id": "plastic",
+        "label": "塑料"
+      }
+    ]
+  },
+  "pieces": [
+    {
+      "file": "p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/classic/k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/cartoon/k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "cartoon",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/pixel/k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "pixel",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "style/doodle/k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "doodle",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/wood/k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "classic",
+      "material": "wood"
+    },
+    {
+      "file": "material/metal/p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/metal/k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "classic",
+      "material": "metal"
+    },
+    {
+      "file": "material/plastic/p-w.svg",
+      "type": "p",
+      "color": "w",
+      "label": "白方兵",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/p-b.svg",
+      "type": "p",
+      "color": "b",
+      "label": "黑方兵",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/n-w.svg",
+      "type": "n",
+      "color": "w",
+      "label": "白方马",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/n-b.svg",
+      "type": "n",
+      "color": "b",
+      "label": "黑方马",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/b-w.svg",
+      "type": "b",
+      "color": "w",
+      "label": "白方象",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/b-b.svg",
+      "type": "b",
+      "color": "b",
+      "label": "黑方象",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/r-w.svg",
+      "type": "r",
+      "color": "w",
+      "label": "白方车",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/r-b.svg",
+      "type": "r",
+      "color": "b",
+      "label": "黑方车",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/q-w.svg",
+      "type": "q",
+      "color": "w",
+      "label": "白方后",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/q-b.svg",
+      "type": "q",
+      "color": "b",
+      "label": "黑方后",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/k-w.svg",
+      "type": "k",
+      "color": "w",
+      "label": "白方王",
+      "style": "classic",
+      "material": "plastic"
+    },
+    {
+      "file": "material/plastic/k-b.svg",
+      "type": "k",
+      "color": "b",
+      "label": "黑方王",
+      "style": "classic",
+      "material": "plastic"
+    }
+  ]
+}

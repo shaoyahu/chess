@@ -1,0 +1,53 @@
+# 局域网国际象棋 —— nginx 反向代理示例
+#
+# 装到：/etc/nginx/sites-available/lan-chess  →  ln -s 到 sites-enabled/
+# 改完：nginx -t && systemctl reload nginx
+#
+# ⚠️ 两个地方必须配对，否则「页面能开、对局连不上」：
+#   ① Upgrade / Connection 头要透传；
+#   ② proxy_read_timeout 要放大 —— nginx 默认 60s 会把 WebSocket 掐掉，
+#      表现是「玩着玩着突然掉线重连」。
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name chess.example.com;   # 改这里：你的域名或公网 IP
+
+    # 上 HTTPS：certbot --nginx -d chess.example.com
+    # 配完证书后建议把上面的 80 端口段改成 301 跳转
+
+    access_log /var/log/nginx/lan-chess.access.log;
+    client_max_body_size 1m;
+
+    # ---- WebSocket：必须单独一段 ----
+    location /ws {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 长连接：默认 60s 会断
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    # ---- 其余路径交给 Next ----
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_read_timeout 60s;
+    }
+}

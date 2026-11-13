@@ -1,0 +1,49 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next-deploy-test/types/**/*.ts",
+    ".next-dev/types/**/*.ts",
+    ".next-gate/types/**/*.ts",
+    ".next-gate-timeout/types/**/*.ts",
+    ".next-build-check/types/**/*.ts",
+    ".next-gate-invite/types/**/*.ts",
+    ".next-gate-prod/types/**/*.ts",
+    ".next-gate-arrow/types/**/*.ts",
+    ".next-gate-replay/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
