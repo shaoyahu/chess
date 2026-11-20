@@ -465,22 +465,69 @@ describe('人机对局', () => {
 /* ------------------------------------------------------------------ */
 
 describe('悔棋', () => {
-  it('发起悔棋只是挂起请求，棋谱不变', () => {
+  /*
+   * 规则（用户 2026-11-20 拍板）：
+   *  - **A. 我刚走完、对方还没回应** → **直接撤回**我那一步，不用问对方；
+   *  - **B. 对方已经回应** → **申请**，对方同意后撤**两步**
+   *    （对方的应手 + 我的那一步），撤完轮到我重走；
+   *  - **终局**（棋盘规则判出来的）也能悔 —— 自己那步将死了照样能撤。
+   */
+
+  it('A：我刚走完、对方还没回应 → 直接撤回，不用对方同意', () => {
     const rm = new RoomManager(() => 0);
     const room = rm.createRoom();
     seatAndReady(rm, room);
     rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
     const res = rm.offerTakeback(room, alice);
     expect(res.ok).toBe(true);
-    expect(room.takebackOffer?.by).toBe('w');
-    expect(room.moves).toHaveLength(1);
+    expect(res.ok && res.direct).toBe(true);
+    // **没有**挂请求 —— 不用等对方点头
+    expect(room.takebackOffer).toBeUndefined();
+    // 那一步真的撤了，轮回到我
+    expect(room.moves).toHaveLength(0);
+    expect(room.fen).toBe(START_FEN);
+    expect(room.fen.split(' ')[1]).toBe('w');
   });
 
-  it('对方同意后撤销自己的那一步', () => {
+  it('A：撤的是我那一步，对方的应手留着（撤一步就够）', () => {
     const rm = new RoomManager(() => 0);
     const room = rm.createRoom();
     seatAndReady(rm, room);
     rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
+    rm.submitMove(room, alice, { from: 'g1', to: 'f3' });
+    // 白方刚走完（黑方还没回应）→ 直接撤
+    const res = rm.offerTakeback(room, alice);
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.direct).toBe(true);
+    // 只撤了白方自己那一步，黑方那一步**还在**
+    expect(room.moves).toHaveLength(2);
+    expect(room.moves[1].color).toBe('b');
+    // 局面回到白方走 g1-f3 之前 → 最后一手是黑方的 e5 → 轮到白方
+    expect(room.fen.split(' ')[1]).toBe('w');
+    expect(room.fen).toContain('rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR');
+  });
+
+  it('B：对方已经回应 → 挂起请求，棋谱先不动', () => {
+    const rm = new RoomManager(() => 0);
+    const room = rm.createRoom();
+    seatAndReady(rm, room);
+    rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
+    const res = rm.offerTakeback(room, alice);
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.direct).toBe(false);
+    expect(room.takebackOffer?.by).toBe('w');
+    // 还没撤 —— 要等对方点头
+    expect(room.moves).toHaveLength(2);
+  });
+
+  it('B：对方同意后撤两步（对方的应手 + 我的那一步），轮到我重走', () => {
+    const rm = new RoomManager(() => 0);
+    const room = rm.createRoom();
+    seatAndReady(rm, room);
+    rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
     rm.offerTakeback(room, alice);
     expect(rm.acceptTakeback(room, bob).ok).toBe(true);
     expect(room.moves).toHaveLength(0);
@@ -489,35 +536,20 @@ describe('悔棋', () => {
     expect(room.takebackOffer).toBeUndefined();
   });
 
-  it('对方已经回应时不能再悔棋（只撤自己那一步做不到）', () => {
-    const rm = new RoomManager(() => 0);
-    const room = rm.createRoom();
-    seatAndReady(rm, room);
-    rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
-    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
-    // 白方刚走完就被回应了 → 白方那一步已经不能单独撤
-    const res = rm.offerTakeback(room, alice);
-    expect(res.ok).toBe(false);
-    expect(room.takebackOffer).toBeUndefined();
-    expect(room.moves).toHaveLength(2);
-  });
-
-  it('只撤销请求方自己那一步，撤完轮到他重走', () => {
+  it('B：撤两步不多撤（白走完、黑又走了一步的那种局面）', () => {
     const rm = new RoomManager(() => 0);
     const room = rm.createRoom();
     seatAndReady(rm, room);
     rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
     rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
     rm.submitMove(room, alice, { from: 'g1', to: 'f3' });
-    // 白方刚走完（黑方还没回应）→ 可以悔
-    expect(rm.offerTakeback(room, alice).ok).toBe(true);
+    rm.submitMove(room, bob, { from: 'b8', to: 'c6' });
+    // 白方申请（最后一步是黑方的）→ 同意后撤 Nc6 + Nf3
+    rm.offerTakeback(room, alice);
     expect(rm.acceptTakeback(room, bob).ok).toBe(true);
-    // 只撤了白方自己那一步，黑方那一步**还在**
     expect(room.moves).toHaveLength(2);
     expect(room.moves[1].color).toBe('b');
-    // 局面回到白方走 g1-f3 之前 → 轮次回到白方
     expect(room.fen.split(' ')[1]).toBe('w');
-    expect(room.fen).toContain('rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR');
   });
 
   it('不能同意自己的悔棋请求', () => {
@@ -525,9 +557,10 @@ describe('悔棋', () => {
     const room = rm.createRoom();
     seatAndReady(rm, room);
     rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
     rm.offerTakeback(room, alice);
     expect(rm.acceptTakeback(room, alice).ok).toBe(false);
-    expect(room.moves).toHaveLength(1);
+    expect(room.moves).toHaveLength(2);
   });
 
   it('对方拒绝后请求作废，棋谱不变', () => {
@@ -535,13 +568,14 @@ describe('悔棋', () => {
     const room = rm.createRoom();
     seatAndReady(rm, room);
     rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
     rm.offerTakeback(room, alice);
     expect(rm.declineTakeback(room, bob).ok).toBe(true);
     expect(room.takebackOffer).toBeUndefined();
-    expect(room.moves).toHaveLength(1);
+    expect(room.moves).toHaveLength(2);
   });
 
-  it('悔棋**不回退棋钟**（时间照常走，悔棋者重新开始计时）', async () => {
+  it('悔棋**不回退棋钟**（A：对方思考的那段时间算对方的）', async () => {
     const rm = new RoomManager(() => 0);
     const room = rm.createRoom();
     seatAndReady(rm, room);
@@ -554,12 +588,30 @@ describe('悔棋', () => {
     await sleep(40);
     rm.offerTakeback(room, alice);
     await sleep(40);
-    rm.acceptTakeback(room, bob);
     // 悔棋**不恢复**棋钟快照：白方的时间没有被「退回去」
     expect(room.clock.wMs).toBe(afterMove);
     // 对方思考的那段时间算**对方**的，不转嫁给悔棋者
     expect(room.clock.bMs).toBeLessThan(before);
     // 而且轮次回到白方 → 白方的钟重新开始走（running = true）
+    expect(room.fen.split(' ')[1]).toBe('w');
+    expect(room.clock.running).toBe(true);
+  });
+
+  it('悔棋**不回退棋钟**（B：轮次在我这边，这段时间算我的）', async () => {
+    const rm = new RoomManager(() => 0);
+    const room = rm.createRoom();
+    seatAndReady(rm, room);
+    rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
+    // 轮到白方 → 白方的钟在走
+    const beforeW = room.clock.wMs;
+    await sleep(40);
+    rm.offerTakeback(room, alice);
+    await sleep(40);
+    expect(rm.acceptTakeback(room, bob).ok).toBe(true);
+    // 时间照常走：白方这段时间**照扣**，没有被「退回去」
+    expect(room.clock.wMs).toBeLessThan(beforeW);
+    // 撤完还是白方走 → 白方的钟重新开始走
     expect(room.fen.split(' ')[1]).toBe('w');
     expect(room.clock.running).toBe(true);
   });
@@ -571,6 +623,44 @@ describe('悔棋', () => {
     rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
     const res = rm.offerTakeback(room, bob);
     expect(res.ok).toBe(false);
+  });
+
+  it('终局（自己那步将死）也能撤回那一步，对局回到进行中', () => {
+    const rm = new RoomManager(() => 0);
+    const room = rm.createRoom();
+    seatAndReady(rm, room);
+    // 学者杀：1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6 4.Qxf7#
+    rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
+    rm.submitMove(room, alice, { from: 'f1', to: 'c4' });
+    rm.submitMove(room, bob, { from: 'b8', to: 'c6' });
+    rm.submitMove(room, alice, { from: 'd1', to: 'h5' });
+    rm.submitMove(room, bob, { from: 'g8', to: 'f6' });
+    rm.submitMove(room, alice, { from: 'h5', to: 'f7' });
+    expect(room.status).toBe('finished');
+    expect(room.result?.reason).toBe('checkmate');
+    // 误将死 → 直接撤回自己那一步
+    const res = rm.offerTakeback(room, alice);
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.direct).toBe(true);
+    expect(room.moves).toHaveLength(6);
+    // 局面回到 Nf6 之后 → 对局回到进行中，轮到白方（最后一手是黑方的 Nf6）
+    expect(room.status).toBe('playing');
+    expect(room.result).toBeUndefined();
+    expect(room.fen.split(' ')[1]).toBe('w');
+  });
+
+  it('终局是认输 / 和棋 → 不能悔（人的决定，撤一步改不了）', () => {
+    const rm = new RoomManager(() => 0);
+    const room = rm.createRoom();
+    seatAndReady(rm, room);
+    rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.resign(room, bob);
+    expect(room.status).toBe('finished');
+    expect(room.result?.reason).toBe('resign');
+    const res = rm.offerTakeback(room, alice);
+    expect(res.ok).toBe(false);
+    expect(room.moves).toHaveLength(1);
   });
 
   it('对方是电脑时自动同意并直接撤销', () => {
@@ -585,7 +675,7 @@ describe('悔棋', () => {
     const res = rm.offerTakeback(room, alice);
     expect(res.ok).toBe(true);
     expect(res.ok && res.autoAccepted).toBe(true);
-    // 只撤销玩家自己那一步，电脑那步留着
+    // 撤掉玩家自己那一步，电脑那步留着
     expect(room.moves).toHaveLength(1);
     expect(room.moves[0].color).toBe('w');
   });
@@ -624,14 +714,16 @@ describe('请求超时自动拒绝', () => {
     const rm = new RoomManager(() => 0);
     const room = rm.createRoom();
     seatAndReady(rm, room);
+    // 对方已经回应 → 走的是「申请」那条路（才有请求可超时）
     rm.submitMove(room, alice, { from: 'e2', to: 'e4' });
+    rm.submitMove(room, bob, { from: 'e7', to: 'e5' });
     rm.offerTakeback(room, alice);
     room.takebackOffer!.deadline = Date.now() - 1;
     const events = rm.tick();
     expect(room.takebackOffer).toBeUndefined();
     const expired = events.find((e) => e.event === 'offer-expired');
     expect(expired && expired.event === 'offer-expired' && expired.kind).toBe('takeback');
-    expect(room.moves).toHaveLength(1);
+    expect(room.moves).toHaveLength(2);
   });
 
   it('电脑直接拒绝和棋（不用干等超时）', () => {

@@ -40,11 +40,15 @@
  *   G22：HUD 按钮顺序是「认输 / 提议和棋 / 悔棋」。
  *   G23：认输必须**二次确认**（点一下只弹浮层，对局继续；确认后才结束）。
  *   G24：对方求和 → 右侧浮层带「同意 / 反对」+ 倒计时。
- *   G25：对方请求悔棋 → 右侧浮层带「同意 / 反对」；同意后那一步**真的被撤销**。
+ *   G25：对方请求悔棋 → 右侧浮层带「同意 / 反对」；同意后**两步**真的被撤销
+ *         （对方的应手 + 我方那一步 —— 规则 2026-11-20 改的）。
  *   G26：浮层是 `position: fixed`，页面里没有内联文字条，也不撑出滚动条。
  *   G27：我方求和 → 右侧浮层显示「等待对方回应」+ 倒计时。
- *   G28：**我方**点「悔棋」→ 对手真的收到了这个请求（我方也弹出等待浮层）。
- *         （G25 只覆盖了「对方发起 → 我方回应」这一半，缺了「我方发起」这一半。）
+ *   G25c：对方**已经回应**之后，悔棋按钮**仍然可点**（走「申请对方同意」那条路）。
+ *   G28b：**我方**点「悔棋」（对方已回应）→ 对手真的收到了这个请求（我方也弹出等待浮层），
+ *         对方同意后撤两步。
+ *   G28：**我方刚走完、对方还没回应**时点「悔棋」→ **直接撤回**那一步：
+ *         不发请求、不弹等待浮层（规则 2026-11-20 改的）。
  *
  * 顺带把截图存到 artifacts/move-arrow/，方便人工复核观感。
  *
@@ -338,6 +342,18 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const pawnStep = (side: 'w' | 'b'): { from: string; to: string } =>
   side === 'w' ? { from: 'e2', to: 'e4' } : { from: 'e7', to: 'e5' };
 
+/** 某个颜色的「g 位马」能走的那一步（开局位置） */
+const gKnightStep = (side: 'w' | 'b'): { from: string; to: string } =>
+  side === 'w' ? { from: 'g1', to: 'f3' } : { from: 'g8', to: 'f6' };
+
+/** 某个颜色的「b 位马」能走的那一步（开局位置） */
+const bKnightStep = (side: 'w' | 'b'): { from: string; to: string } =>
+  side === 'w' ? { from: 'b1', to: 'c3' } : { from: 'b8', to: 'c6' };
+
+/** 某个颜色的 a 兵能走的那一步（开局位置） */
+const aPawnStep = (side: 'w' | 'b'): { from: string; to: string } =>
+  side === 'w' ? { from: 'a2', to: 'a3' } : { from: 'a7', to: 'a6' };
+
 /* ------------------------------------------------------------------ */
 
 interface Box {
@@ -500,6 +516,36 @@ async function main(): Promise<void> {
         })()
       `);
       await sleep(400);
+    };
+
+    /**
+     * **等棋子停稳**再量几何。
+     *
+     * 棋子有 0.22s 的位移过渡（`.piece` 的 `transition: left/top`）——
+     * 量早了会量到**半路上**的棋子：它的中心既不在起点格、也不在终点格，
+     * 于是「终点有棋子」这条判据会**假红**（箭头其实是对的，只是还没走完）。
+     *
+     * 判据：连续两次采样（间隔 260ms > 过渡时长）的棋子位置**完全一样** = 停稳了。
+     * 等不到就按现状往下走（不能让脚手架把门禁卡死）。
+     */
+    const piecesStable = async (): Promise<void> => {
+      const sample = async (): Promise<string> =>
+        await evaluate<string>(`
+          [...document.querySelectorAll('.piece-layer .piece')]
+            .map((el) => {
+              const b = el.getBoundingClientRect();
+              return Math.round(b.left) + ',' + Math.round(b.top);
+            })
+            .join('|')
+        `);
+      const deadline = Date.now() + 5000;
+      let prev = await sample();
+      while (Date.now() < deadline) {
+        await sleep(260);
+        const now = await sample();
+        if (now === prev) return;
+        prev = now;
+      }
     };
 
     /**
@@ -709,6 +755,8 @@ async function main(): Promise<void> {
     await waitForExpr(`document.querySelectorAll('.chat-log .msg').length > 0`, '聊天记录里出现消息', 10000);
 
     if (gateEnabledAny(["G1", "G8", "G9"])) {
+    // 先等棋子停稳（否则量到半路上的棋子 → 假红）
+    await piecesStable();
     const geo = await evaluate<{
       points: string | null;
       board: Box | null;
@@ -2020,22 +2068,41 @@ async function main(): Promise<void> {
     );
     }
 
-    /* ---------------- G25：对方请求悔棋 → 同意后真的撤销那一步 ---------------- */
-    if (gateEnabledAny(["G25", "G25b"])) {
+    /* ---------------- 悔棋：两条路（2026-11-20 新规则） ---------------- */
+    if (gateEnabledAny(["G25", "G25b", "G25c", "G28", "G28b"])) {
     /*
-     * 抽签之后「谁先走」变了，所以这一段的对局流程按**实际执色**安排：
+     * 悔棋的**两条路**（用户 2026-11-20 拍板）：
      *
-     *   · 对手要走的那一步 = **它自己那个兵**（白 e2→e4 / 黑 e7→e5）；
-     *   · 悔棋请求只能由「刚走完那一步的人」发起（规则：只悔自己那一步），
-     *     所以对手走子之前必须已经轮到它 ——
-     *     浏览器执白时，上面那段准备动作已经先走了一步，把回合让给了对手。
+     *  - **A. 我刚走完、对方还没回应** → 点「悔棋」**直接撤回**我那一步，
+     *    不用等对方点头（不发请求、不弹等待浮层）。
+     *  - **B. 对方已经回应** → 点「悔棋」是**申请**；对方同意后撤**两步**
+     *    （对方的应手 + 我的那一步），轮到我重走。
+     *
+     * 下面按**实际执色**走一套固定着法，把三条路径都走一遍：
+     *
+     *   1. 对手 e 兵 → 2. 浏览器 e 兵 → 3. 对手 b 马 → 4. 浏览器 g 马
+     *   → 5. 对手 a 兵 → 6. 浏览器 b 马
+     *
+     * 走到第 6 步：**对手**的 a 兵已经被回应过（浏览器走了 b 马），
+     * 所以对手处在「B」的位置 —— 它申请悔棋，浏览器这边会收到浮层（G25 / G25b）。
+     *
+     * 同意之后撤两步，局面回到第 1~4 步；
+     * 此时**浏览器**的 g 马也已经被回应过（对手走过 a 兵），
+     * 浏览器也处在「B」的位置 —— 点「悔棋」会发申请（G25c / G28b）。
+     *
+     * 最后浏览器再走一步 a 兵：此刻对方还没回应 →
+     * 点「悔棋」**直接撤回**（G28）。
      */
-    opp.send(JSON.stringify({ t: 'move', from: oppStep.from, to: oppStep.to }));
-    await sleep(1100);
-    const movedState = await evaluate<{ last: number; from: string; to: string }>(`
-      (() => {
-        const pieceAt = (sq) => {
-          const s = document.querySelector('[data-square="' + sq + '"]');
+    const oppPieceCls = oppSide === 'w' ? 'piece w' : 'piece b';
+    const brPieceCls = browserSide === 'w' ? 'piece w' : 'piece b';
+
+    /** 读某个格子上的棋子类名（空格子 = ''） */
+    const readPieceAt = async (sq: string): Promise<string> => {
+      // 棋子还在滑的时候读，量到的是「半路上」的那一枚
+      await piecesStable();
+      return await evaluate<string>(`
+        (() => {
+          const s = document.querySelector('[data-square="${sq}"]');
           if (!s) return '';
           const r = s.getBoundingClientRect();
           const pieces = [...document.querySelectorAll('.piece')].map((p) => {
@@ -2046,14 +2113,76 @@ async function main(): Promise<void> {
             (p) => Math.abs(p.cx - (r.left + r.width / 2)) < r.width / 2 && Math.abs(p.cy - (r.top + r.height / 2)) < r.height / 2,
           );
           return hit ? hit.cls : '';
-        };
-        return {
-          last: document.querySelectorAll('.square.lastmove').length,
-          from: pieceAt('${oppStep.from}'),
-          to: pieceAt('${oppStep.to}'),
-        };
-      })()
-    `);
+        })()
+      `);
+    };
+
+    /** 等某个格子上出现某方的棋子（对手走完一步之后用） */
+    const waitPieceAt = async (sq: string, cls: string, label: string): Promise<void> => {
+      await waitForExpr(
+        `(() => {
+          const s = document.querySelector('[data-square="${sq}"]');
+          if (!s) return false;
+          const r = s.getBoundingClientRect();
+          const pieces = [...document.querySelectorAll('.piece')].map((p) => {
+            const b = p.getBoundingClientRect();
+            return { cls: p.className, cx: b.left + b.width / 2, cy: b.top + b.height / 2 };
+          });
+          const hit = pieces.find(
+            (p) => Math.abs(p.cx - (r.left + r.width / 2)) < r.width / 2 && Math.abs(p.cy - (r.top + r.height / 2)) < r.height / 2,
+          );
+          return !!hit && hit.cls.indexOf('${cls}') >= 0;
+        })()`,
+        label,
+        10000,
+      );
+    };
+
+    /** 等浏览器这边轮到走（对手刚走完一步） */
+    const waitMyTurn = async (label: string): Promise<void> => {
+      await waitPieceAt(oppStep.to, oppPieceCls, label);
+      await sleep(300);
+    };
+
+    const oppBKn = bKnightStep(oppSide);
+    const oppAPawn = aPawnStep(oppSide);
+    const brGKn = gKnightStep(browserSide);
+    const brBKn = bKnightStep(browserSide);
+    const brAPawn = aPawnStep(browserSide);
+
+    /* --- 第 1~6 步：把两条路都铺垫出来 --- */
+    opp.send(JSON.stringify({ t: 'move', from: oppStep.from, to: oppStep.to }));
+    await waitMyTurn(`对手走出 ${oppStep.from}→${oppStep.to}`);
+    await browserMove(browserStep.from, browserStep.to);
+    await waitForExpr(
+      `(document.querySelector('.hud-status')?.innerText ?? '').includes('等待对手走棋')`,
+      `浏览器走出 ${browserStep.from}→${browserStep.to}`,
+      10000,
+    );
+    opp.send(JSON.stringify({ t: 'move', from: oppBKn.from, to: oppBKn.to }));
+    await waitPieceAt(oppBKn.to, oppPieceCls, `对手走出 ${oppBKn.from}→${oppBKn.to}`);
+    await browserMove(brGKn.from, brGKn.to);
+    await waitForExpr(
+      `(document.querySelector('.hud-status')?.innerText ?? '').includes('等待对手走棋')`,
+      `浏览器走出 ${brGKn.from}→${brGKn.to}`,
+      10000,
+    );
+    opp.send(JSON.stringify({ t: 'move', from: oppAPawn.from, to: oppAPawn.to }));
+    await waitPieceAt(oppAPawn.to, oppPieceCls, `对手走出 ${oppAPawn.from}→${oppAPawn.to}`);
+    await browserMove(brBKn.from, brBKn.to);
+    await waitForExpr(
+      `(document.querySelector('.hud-status')?.innerText ?? '').includes('等待对手走棋')`,
+      `浏览器走出 ${brBKn.from}→${brBKn.to}`,
+      10000,
+    );
+
+    /* ---------------- G25 / G25b：对方请求悔棋 → 同意后撤两步 ---------------- */
+    /*
+     * 对手此刻处在「B」的位置（它的 a 兵被回应过）→ 它申请悔棋 = 走请求那条路，
+     * 浏览器这边会收到「对方请求悔棋」的浮层。
+     *
+     * 同意之后撤**两步**：浏览器自己的 b 马 + 对手的 a 兵。
+     */
     opp.send(JSON.stringify({ t: 'takeback.offer' }));
     await waitForExpr(
       `!!document.querySelector('.side-prompt[data-prompt="takeback-incoming"]')`,
@@ -2074,7 +2203,7 @@ async function main(): Promise<void> {
       'G25 对方请求悔棋：右侧浮层带「同意 / 反对」两个按钮',
       `浮层存在=${tbPrompt.exists} 按钮=${tbPrompt.buttons.join('、')}`,
     );
-    // 点「同意」→ 那一步必须真的被撤销（对手的兵退回原位，高亮也不再是那一步）
+    // 点「同意」→ 撤两步：浏览器自己的 b 马 + 对手的 a 兵
     await evaluate(`
       (() => {
         const el = document.querySelector('.side-prompt[data-prompt="takeback-incoming"]');
@@ -2084,81 +2213,45 @@ async function main(): Promise<void> {
       })()
     `);
     await sleep(1200);
-    const undone = await evaluate<{ marks: string[]; from: string; to: string; prompt: boolean }>(`
-      (() => {
-        const pieceAt = (sq) => {
-          const s = document.querySelector('[data-square="' + sq + '"]');
-          if (!s) return '';
-          const r = s.getBoundingClientRect();
-          const pieces = [...document.querySelectorAll('.piece')].map((p) => {
-            const b = p.getBoundingClientRect();
-            return { cls: p.className, cx: b.left + b.width / 2, cy: b.top + b.height / 2 };
-          });
-          const hit = pieces.find(
-            (p) => Math.abs(p.cx - (r.left + r.width / 2)) < r.width / 2 && Math.abs(p.cy - (r.top + r.height / 2)) < r.height / 2,
-          );
-          return hit ? hit.cls : '';
-        };
-        return {
-          marks: [...document.querySelectorAll('.square.lastmove')].map((el) => el.getAttribute('data-square') ?? ''),
-          from: pieceAt('${oppStep.from}'),
-          to: pieceAt('${oppStep.to}'),
-          prompt: !!document.querySelector('.side-prompt[data-prompt="takeback-incoming"]'),
-        };
-      })()
-    `);
-    /*
-     * 判据（按**对手实际执色**来判，不写死「白兵 / e2」）：
-     *   ① 那一步**真的走出去了** —— 对手的兵到了目的地；
-     *   ② 同意悔棋后它**回到原位**；
-     *   ③ 目的地已经空出来；
-     *   ④ **被撤销的那一步不再被高亮**。
-     *
-     * ① 是**执色自适应自己的体检**：如果这里按错了颜色（走错色的兵会被服务端拒掉），
-     * ① 就不成立 —— 这条门禁会红，而不是「什么都没发生也算过」。
-     *
-     * ④ 原来写的是「高亮格数 === 0」——
-     * 浏览器执白时它自己先走过一步，高亮理应还留着**它那一步**，
-     * 所以这里改成「高亮里不含被撤销的那一步」：撤销成功就一定成立，
-     * 撤销没生效（高亮还指着对手那一步）就一定不成立。
-     */
-    const oppPieceCls = oppSide === 'w' ? 'piece w' : 'piece b';
-    verdict(
-      movedState.to.includes(oppPieceCls) &&
-        undone.from.includes(oppPieceCls) &&
-        !undone.to.includes(oppPieceCls) &&
-        !undone.marks.includes(oppStep.from) &&
-        !undone.marks.includes(oppStep.to),
-      'G25b 同意悔棋后，那一步真的被撤销（对手的兵退回原位）',
-      `撤销前：${oppStep.from}="${movedState.from}" ${oppStep.to}="${movedState.to}"（高亮 ${movedState.last} 格）` +
-        `｜撤销后：${oppStep.from}="${undone.from}" ${oppStep.to}="${undone.to}"｜高亮格=[${undone.marks.join(',')}]` +
-        `（不该再含被撤销的 ${oppStep.from}/${oppStep.to}）`,
+    const brKnHome = await readPieceAt(brBKn.from);
+    const brKnGone = await readPieceAt(brBKn.to);
+    const oppPawnHome = await readPieceAt(oppAPawn.from);
+    const oppPawnGone = await readPieceAt(oppAPawn.to);
+    const promptGone = await evaluate<boolean>(
+      `!document.querySelector('.side-prompt[data-prompt="takeback-incoming"]')`,
     );
-    }
+    verdict(
+      brKnHome.includes(brPieceCls) &&
+        !brKnGone.includes(brPieceCls) &&
+        oppPawnHome.includes(oppPieceCls) &&
+        !oppPawnGone.includes(oppPieceCls) &&
+        promptGone,
+      'G25b 同意悔棋后**两步**真的被撤销（我的那一步 + 对方的应手）',
+      `浏览器 ${brBKn.from}="${brKnHome}" ${brBKn.to}="${brKnGone}"｜` +
+        `对手 ${oppAPawn.from}="${oppPawnHome}" ${oppAPawn.to}="${oppPawnGone}"｜浮层已关=${promptGone}`,
+    );
 
-    /* ---------------- G28：我方点「悔棋」→ 对手真的收到了这个请求 ---------------- */
-    if (gateEnabledAny(["G28", "G25c"])) {
     /*
-     * G25 抓的是「**对方**发起 → 我方回应」，那条路径里浏览器的「悔棋」按钮根本没被点。
-     * 用户要的是「**我方**点悔棋 → 对方同意后可以悔一步」，所以这里补上另一半：
-     * 浏览器自己走一步（必须自己走过棋，服务端才允许悔棋），
-     * 再点 HUD 上的「悔棋」，断言：
-     *   ① 浏览器自己出现「等待对方回应」的右侧浮层；
-     *   ② **对手（ws）真的收到了 takeback 请求**（room 快照里带 takebackOffer）。
-     */
-    opp.send(JSON.stringify({ t: 'move', from: oppStep.from, to: oppStep.to }));
-    await sleep(900);
-    }
-
-    /* ---------------- G25c：悔棋按钮只在「自己刚走完那一步」时可点 ---------------- */
-    if (gateEnabledAny(["G25c", "G28"])) {
-    /*
-     * 规则（用户拍板）：悔棋**只撤销你自己走的那一步**，对方同意后轮到你重走。
-     * 所以只有「我刚走完、对方还没回应」时才能悔 ——
-     * 对方一旦回应，这一步就锁死了（对方的着法是踩在我那步上算的）。
+     * 刚才撤掉两步之后，局面回到第 1~4 步 —— **浏览器**的最后一步（g 马）
+     * 又变成「没被回应过」的了，它处在「A」的位置。
      *
-     * 此刻：对手刚走完它那一步（${oppStep.from}→${oppStep.to}），轮到浏览器 ——
-     * 浏览器还没走过那一步，所以它的「悔棋」按钮必须是**禁用**的。
+     * 要测「B」那条路（申请对方同意），得让**对手再回应一步**：
+     *   浏览器再走 b 马（刚撤回来，位置是空的）→ 对手再走 a 兵（也刚撤回来），
+     *   于是浏览器那一步**被回应过**了 → 浏览器落在「B」的位置。
+     */
+    await browserMove(brBKn.from, brBKn.to);
+    await waitForExpr(
+      `(document.querySelector('.hud-status')?.innerText ?? '').includes('等待对手走棋')`,
+      `浏览器再走出 ${brBKn.from}→${brBKn.to}`,
+      10000,
+    );
+    opp.send(JSON.stringify({ t: 'move', from: oppAPawn.from, to: oppAPawn.to }));
+    await waitPieceAt(oppAPawn.to, oppPieceCls, `对手再走出 ${oppAPawn.from}→${oppAPawn.to}`);
+
+    /* ---------------- G25c / G28b：对方已经回应 → 悔棋按钮仍可点（走申请） ---------------- */
+    /*
+     * 此刻**浏览器**的 b 马已经被回应过（对手刚走过 a 兵）→ 浏览器处在「B」的位置。
+     * 新规则：这种情况下悔棋按钮**照样可点**，点下去是**申请**。
      */
     const tbBtnState = await evaluate<{ exists: boolean; disabled: boolean }>(`
       (() => {
@@ -2168,26 +2261,12 @@ async function main(): Promise<void> {
       })()
     `);
     verdict(
-      tbBtnState.exists && tbBtnState.disabled,
-      'G25c 悔棋按钮：对方刚走完时是**禁用**的（只能悔自己刚走的那一步）',
+      tbBtnState.exists && !tbBtnState.disabled,
+      'G25c 悔棋按钮：对方已经回应之后**仍然可点**（改成走「申请对方同意」那条路）',
       `悔棋按钮存在=${tbBtnState.exists} 已禁用=${tbBtnState.disabled}`,
     );
 
-    // 浏览器走**自己那个兵**（白 e2→e4 / 黑 e7→e5）—— 走完这一步它才有得可悔
-    await browserMove(browserStep.from, browserStep.to);
-    await waitForExpr(
-      `(document.querySelector('.hud-status')?.innerText ?? '').includes('等待对手走棋')`,
-      `浏览器走出 ${browserStep.from}→${browserStep.to}`,
-      10000,
-    );
     const oppMsgsBefore = oppMsgs.length;
-    const myTbBtn = await evaluate<{ exists: boolean; disabled: boolean }>(`
-      (() => {
-        const btn = [...document.querySelectorAll('.hud-actions button')]
-          .find((b) => (b.textContent ?? '').trim() === '悔棋');
-        return { exists: !!btn, disabled: !!btn && btn.disabled === true };
-      })()
-    `);
     await evaluate(`
       (() => {
         const btn = [...document.querySelectorAll('.hud-actions button')]
@@ -2200,20 +2279,74 @@ async function main(): Promise<void> {
     const myTb = await evaluate<{ prompt: boolean; text: string }>(`
       (() => {
         const el = document.querySelector('.side-prompt[data-prompt="takeback-waiting"]');
-        return { prompt: !!el, text: (el?.textContent ?? '').replace(/\\s+/g, ' ').trim() };
+        return { prompt: !!el, text: (el?.textContent ?? '').replace(/\s+/g, ' ').trim() };
       })()
     `);
     const oppGotOffer = oppMsgs
       .slice(oppMsgsBefore)
       .some((m: any) => m?.t === 'room' && m?.state?.takebackOffer);
     verdict(
-      myTb.prompt && oppGotOffer && myTbBtn.exists && !myTbBtn.disabled,
-      'G28 我方点「悔棋」：对手真的收到了悔棋请求（我方也弹出等待浮层）',
-      `我方等待浮层=${myTb.prompt}（${myTb.text.slice(0, 40)}）｜对手收到 takebackOffer=${oppGotOffer}｜按钮可点=${myTbBtn.exists && !myTbBtn.disabled}`,
+      myTb.prompt && oppGotOffer,
+      'G28b 我方点「悔棋」（对方已回应）：对手真的收到了悔棋请求，我方弹出等待浮层',
+      `我方等待浮层=${myTb.prompt}（${myTb.text.slice(0, 40)}）｜对手收到 takebackOffer=${oppGotOffer}`,
     );
-    // 收尾：让对手拒绝，清掉这条待回应请求（后面的认输门禁要求房间是干净的在下状态）
-    opp.send(JSON.stringify({ t: 'takeback.decline' }));
-    await sleep(800);
+    // 对手同意 → 撤两步（对方的 a 兵 + 我的 b 马）
+    opp.send(JSON.stringify({ t: 'takeback.accept' }));
+    await sleep(1200);
+    const brKnHome2 = await readPieceAt(brBKn.from);
+    const brKnGone2 = await readPieceAt(brBKn.to);
+    const oppPawnBack = await readPieceAt(oppAPawn.from);
+    const oppPawnGone2 = await readPieceAt(oppAPawn.to);
+    verdict(
+      brKnHome2.includes(brPieceCls) &&
+        !brKnGone2.includes(brPieceCls) &&
+        oppPawnBack.includes(oppPieceCls) &&
+        !oppPawnGone2.includes(oppPieceCls),
+      'G28b 对手同意后**两步**被撤销（对方的应手 + 我那一步），轮到我重走',
+      `浏览器 ${brBKn.from}="${brKnHome2}" ${brBKn.to}="${brKnGone2}"｜` +
+        `对手 ${oppAPawn.from}="${oppPawnBack}" ${oppAPawn.to}="${oppPawnGone2}"`,
+    );
+
+    /* ---------------- G28：我方刚走完 → 点悔棋**直接撤回** ---------------- */
+    /*
+     * 浏览器再走一步 a 兵：此刻**对方还没回应** → 走「直接撤回」那条路 ——
+     * 不发请求、不弹等待浮层，那一步当场就退回去了。
+     */
+    await browserMove(brAPawn.from, brAPawn.to);
+    await waitForExpr(
+      `(document.querySelector('.hud-status')?.innerText ?? '').includes('等待对手走棋')`,
+      `浏览器走出 ${brAPawn.from}→${brAPawn.to}`,
+      10000,
+    );
+    const oppMsgsBeforeDirect = oppMsgs.length;
+    const beforeDirect = await readPieceAt(brAPawn.to);
+    await evaluate(`
+      (() => {
+        const btn = [...document.querySelectorAll('.hud-actions button')]
+          .find((b) => (b.textContent ?? '').trim() === '悔棋');
+        if (btn) btn.click();
+        return true;
+      })()
+    `);
+    await sleep(1200);
+    const afterDirect = await readPieceAt(brAPawn.to);
+    const backHome = await readPieceAt(brAPawn.from);
+    const waitingPrompt = await evaluate<boolean>(
+      `!!document.querySelector('.side-prompt[data-prompt="takeback-waiting"]')`,
+    );
+    const oppGotDirect = oppMsgs
+      .slice(oppMsgsBeforeDirect)
+      .some((m: any) => m?.t === 'room' && m?.state?.takebackOffer);
+    verdict(
+      beforeDirect.includes(brPieceCls) &&
+        !afterDirect.includes(brPieceCls) &&
+        backHome.includes(brPieceCls) &&
+        !waitingPrompt &&
+        !oppGotDirect,
+      'G28 我方刚走完就点「悔棋」：**直接撤回**（不用对方同意，也没有等待浮层）',
+      `走完时 ${brAPawn.to}="${beforeDirect}"｜撤回后 ${brAPawn.from}="${backHome}" ${brAPawn.to}="${afterDirect}"｜` +
+        `等待浮层=${waitingPrompt}｜对手收到请求=${oppGotDirect}`,
+    );
     }
 
     /* ---------------- G23：认输二次确认 ---------------- */

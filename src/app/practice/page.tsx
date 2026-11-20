@@ -24,6 +24,8 @@ import {
   Castle,
   ChevronLeft,
   ChevronRight,
+  Circle,
+  Disc,
   Eraser,
   FlipHorizontal2,
   Grid2x2,
@@ -48,10 +50,19 @@ import { pieceAt, statusOf } from '@/lib/chess-engine';
 import { applyFreeMove } from '@/lib/replay';
 import type { Color, PieceType } from '@/lib/types';
 import {
+  positionAt,
+  pushStep,
+  type PracticeStep,
+} from '@/lib/practice/history';
+import {
   LESSONS,
+  LESSON_TAGS,
   formationPosition,
+  lessonLines,
   lessonSteps,
+  resolveLine,
   type Lesson,
+  type LessonTag,
 } from '@/lib/practice/lessons';
 import {
   PIECE_LABEL,
@@ -72,14 +83,6 @@ type Phase = 'setup' | 'play';
 
 /** 摆棋时手里的「笔」：某色的某个子，或者橡皮 */
 type Brush = { kind: 'piece'; type: PieceType; color: Color } | { kind: 'erase' };
-
-/** 自由练习记下的一手 */
-interface PracticeStep {
-  san: string;
-  color: Color;
-  from: string;
-  to: string;
-}
 
 /** 先走方 */
 const TURN_OPTIONS: PickerOption<Color>[] = [
@@ -144,13 +147,24 @@ export default function PracticePage() {
   const [stepIndex, setStepIndex] = useState(0);
   /** 看「走法演示」还是看「典型摆法」 */
   const [lessonView, setLessonView] = useState<'moves' | 'formation'>('moves');
+  /** 课程分类筛选（null = 全部） */
+  const [tagFilter, setTagFilter] = useState<LessonTag | null>(null);
+  /**
+   * 当前看的是哪条线路（null = 主线）。
+   *
+   * 「应对」类课程一课有 2~3 条线路（对方有几种正经应手），
+   * 切线路就是切到另一条演示线 —— 局面、讲解、要点整套换掉。
+   */
+  const [lineId, setLineId] = useState<string | null>(null);
 
   const lesson: Lesson = useMemo(
     () => LESSONS.find((l) => l.id === lessonId) ?? LESSONS[0],
     [lessonId],
   );
+  /** 这一课当前显示的线路（主线或选中的备用线） */
+  const activeLine = useMemo(() => resolveLine(lesson, lineId), [lesson, lineId]);
   /** 演示线的每一步（含局面与着法来源） */
-  const steps = useMemo(() => lessonSteps(lesson), [lesson]);
+  const steps = useMemo(() => lessonSteps(lesson, lineId), [lesson, lineId]);
   /** 「典型摆法」的局面 */
   const formationFen = useMemo(() => formationPosition(lesson), [lesson]);
   /**
@@ -163,11 +177,24 @@ export default function PracticePage() {
     lessonView === 'formation' ? (formationFen ?? lesson.fen) : (steps[Math.min(stepIndex, steps.length - 1)]?.fen ?? lesson.fen);
   /** 当前这一步的着法（第一步没有着法） */
   const currentMove = stepIndex > 0 ? steps[stepIndex] : undefined;
+  /** 筛选后的课单 */
+  const visibleLessons = useMemo(
+    () => (tagFilter ? LESSONS.filter((l) => l.tag === tagFilter) : LESSONS),
+    [tagFilter],
+  );
+  /** 各类有几课（筛选按钮上的数字） */
+  const tagCounts = useMemo(() => {
+    const counts = new Map<LessonTag, number>();
+    for (const l of LESSONS) counts.set(l.tag, (counts.get(l.tag) ?? 0) + 1);
+    return counts;
+  }, []);
 
   const selectLesson = useCallback((id: string) => {
     setLessonId(id);
     setStepIndex(0);
     setLessonView('moves');
+    // 换课就回到主线：上一课的线路 id 在新课程里多半不存在
+    setLineId(null);
   }, []);
 
   /* ---------------- 自由练习 ---------------- */
@@ -176,10 +203,24 @@ export default function PracticePage() {
   const [brush, setBrush] = useState<Brush>({ kind: 'piece', type: 'p', color: 'w' });
   const [startTurn, setStartTurn] = useState<Color>('w');
   const [setupError, setSetupError] = useState<string | null>(null);
-  /** 练习中的局面 */
-  const [practiceFen, setPracticeFen] = useState<string>(START_FEN);
+  /** 练习的**起始局面**（摆棋定下来的那个） */
+  const [practiceStartFen, setPracticeStartFen] = useState<string>(START_FEN);
+  /** 练习的棋谱（每一步带着走完之后的局面） */
   const [practiceSteps, setPracticeSteps] = useState<PracticeStep[]>([]);
+  /**
+   * **棋谱游标**：已经走了几手（0 = 起始局面）。
+   *
+   * 棋盘显示的局面由「起始局面 + 棋谱 + 游标」算出来，
+   * 不单独存 —— 存两份迟早会对不上。
+   */
+  const [practiceCursor, setPracticeCursor] = useState(0);
   const [flipped, setFlipped] = useState(false);
+
+  /** 棋盘该显示的局面（跟着游标走） */
+  const practiceFen = useMemo(
+    () => positionAt(practiceStartFen, practiceSteps, practiceCursor),
+    [practiceStartFen, practiceSteps, practiceCursor],
+  );
 
   const boardTheme = useMemo(() => getBoardTheme(settings.boardTheme), [settings.boardTheme]);
 
@@ -204,8 +245,9 @@ export default function PracticePage() {
       return;
     }
     setSetupError(null);
-    setPracticeFen(result.fen);
+    setPracticeStartFen(result.fen);
     setPracticeSteps([]);
+    setPracticeCursor(0);
     setPhase('play');
   }, [placement, startTurn]);
 
@@ -214,13 +256,22 @@ export default function PracticePage() {
     (from: string, to: string, promotion?: PieceType) => {
       const result = applyFreeMove(practiceFen, from, to, promotion);
       if (!result) return;
-      setPracticeFen(result.fen);
-      setPracticeSteps((prev) => [
-        ...prev,
-        { san: result.step.san, color: result.step.color, from, to },
-      ]);
+      /*
+       * 落新的一手 = **换了一条线**：游标之后的旧着法作废（`pushStep` 截断）。
+       * 截断之后游标正好落在最后 —— 棋谱又和局面一一对应了。
+       */
+      setPracticeSteps((prev) =>
+        pushStep(prev, practiceCursor, {
+          san: result.step.san,
+          color: result.step.color,
+          from,
+          to,
+          fen: result.fen,
+        }),
+      );
+      setPracticeCursor(practiceCursor + 1);
     },
-    [practiceFen],
+    [practiceFen, practiceCursor],
   );
 
   const interaction = useBoardInteraction({
@@ -237,9 +288,15 @@ export default function PracticePage() {
     setPhase('setup');
   }, [practiceFen]);
 
-  /** 棋谱按「回合号 白着 黑着」分行 */
+  /** 棋谱按「回合号 白着 黑着」分行；每一手记下自己的序号（高亮当前手用） */
   const notation = useMemo(() => {
-    const rows: Array<{ no: number; white?: string; black?: string }> = [];
+    const rows: Array<{
+      no: number;
+      white?: string;
+      black?: string;
+      whiteIdx?: number;
+      blackIdx?: number;
+    }> = [];
     practiceSteps.forEach((step, index) => {
       const no = Math.floor(index / 2) + 1;
       let row = rows[no - 1];
@@ -247,8 +304,13 @@ export default function PracticePage() {
         row = { no };
         rows[no - 1] = row;
       }
-      if (step.color === 'w') row.white = step.san;
-      else row.black = step.san;
+      if (step.color === 'w') {
+        row.white = step.san;
+        row.whiteIdx = index;
+      } else {
+        row.black = step.san;
+        row.blackIdx = index;
+      }
     });
     return rows;
   }, [practiceSteps]);
@@ -265,7 +327,7 @@ export default function PracticePage() {
 
   return (
     <div className="page">
-      <header className="topbar container">
+      <header className="topbar container wide">
         <div className="brand">
           <span className="mark" aria-hidden="true">
             <Castle size={17} />
@@ -308,7 +370,7 @@ export default function PracticePage() {
         </div>
       </header>
 
-      <main className="container" style={{ paddingBottom: 40, flex: 1 }}>
+      <main className="container wide" style={{ paddingBottom: 40, flex: 1 }}>
         <div className="mode-bar practice-tabs">
           <button
             className={`btn${tab === 'lesson' ? ' active' : ''}`}
@@ -340,8 +402,30 @@ export default function PracticePage() {
                 </div>
                 <span className="section-meta">{LESSONS.length} 课</span>
               </div>
+              {/* 分类筛选 —— 三十多课平铺太长，按「基本功/开局/应对/残局」分桶 */}
+              <div className="lesson-filter">
+                <button
+                  className={`lesson-filter-chip${tagFilter === null ? ' active' : ''}`}
+                  onClick={() => setTagFilter(null)}
+                  aria-pressed={tagFilter === null}
+                >
+                  全部
+                  <span className="lesson-filter-count">{LESSONS.length}</span>
+                </button>
+                {LESSON_TAGS.map((tag) => (
+                  <button
+                    key={tag}
+                    className={`lesson-filter-chip${tagFilter === tag ? ' active' : ''}`}
+                    onClick={() => setTagFilter(tag)}
+                    aria-pressed={tagFilter === tag}
+                  >
+                    {tag}
+                    <span className="lesson-filter-count">{tagCounts.get(tag) ?? 0}</span>
+                  </button>
+                ))}
+              </div>
               <div className="lesson-list">
-                {LESSONS.map((item) => (
+                {visibleLessons.map((item) => (
                   <button
                     key={item.id}
                     className={`lesson-row${item.id === lesson.id ? ' active' : ''}`}
@@ -349,6 +433,19 @@ export default function PracticePage() {
                     aria-pressed={item.id === lesson.id}
                   >
                     <span className="lesson-row-tag">{item.tag}</span>
+                    {/*
+                     * 侧别：白方 = 空心圈、黑方 = 实心圈 —— 国际象棋通用约定。
+                     * 不用棋子图形：白车画在纸色底上几乎看不见。
+                     */}
+                    {item.side && (
+                      <span className={`lesson-row-side side-${item.side}`}>
+                        {item.side === 'b' ? (
+                          <Disc size={13} aria-hidden="true" />
+                        ) : (
+                          <Circle size={13} aria-hidden="true" />
+                        )}
+                      </span>
+                    )}
                     <span className="lesson-row-main">
                       <span className="lesson-row-name">{item.name}</span>
                       <span className="lesson-row-en">{item.en}</span>
@@ -394,6 +491,25 @@ export default function PracticePage() {
                 <span className="section-meta">{lesson.en}</span>
               </div>
 
+              {/* 线路切换 —— 一课有多条线路时（应对课：对方有几种正经应手） */}
+              {lesson.lines && lesson.lines.length > 0 && (
+                <div className="lesson-lines">
+                  {lessonLines(lesson).map((line) => (
+                    <button
+                      key={line.id}
+                      className={`lesson-line-chip${line.id === activeLine.id ? ' active' : ''}`}
+                      onClick={() => {
+                        setLineId(line.id === activeLine.id ? null : line.id);
+                        setStepIndex(0);
+                      }}
+                      aria-pressed={line.id === activeLine.id}
+                    >
+                      {line.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {lesson.formation && (
                 <div className="view-toggle lesson-toggle">
                   <button
@@ -419,7 +535,7 @@ export default function PracticePage() {
                     <div className="lesson-step-head">
                       <span className="lesson-san">{currentMove?.san ?? '开局'}</span>
                       <span className="lesson-progress">
-                        {stepIndex} / {lesson.moves.length}
+                        {stepIndex} / {activeLine.moves.length}
                       </span>
                     </div>
                     <p className="lesson-note">
@@ -463,7 +579,7 @@ export default function PracticePage() {
                     </button>
                   </div>
                   <ul className="lesson-points">
-                    {lesson.points.map((point) => (
+                    {activeLine.points.map((point) => (
                       <li key={point}>{point}</li>
                     ))}
                   </ul>
@@ -620,8 +736,20 @@ export default function PracticePage() {
                     {notation.map((row) => (
                       <div className="notation-row" key={row.no}>
                         <span className="no">{row.no}.</span>
-                        <span className={`san${row.white ? '' : ' empty'}`}>{row.white ?? ''}</span>
-                        <span className={`san${row.black ? '' : ' empty'}`}>{row.black ?? ''}</span>
+                        <span
+                          className={`san${row.white ? '' : ' empty'}${
+                            row.whiteIdx === practiceCursor - 1 ? ' current' : ''
+                          }`}
+                        >
+                          {row.white ?? ''}
+                        </span>
+                        <span
+                          className={`san${row.black ? '' : ' empty'}${
+                            row.blackIdx === practiceCursor - 1 ? ' current' : ''
+                          }`}
+                        >
+                          {row.black ?? ''}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -632,7 +760,11 @@ export default function PracticePage() {
                     </button>
                     <button
                       className="btn small ghost"
-                      onClick={() => setPracticeSteps([])}
+                      onClick={() => {
+                        // 棋谱清空 → 游标也回起点（不然「手数」会显示成 3 / 0 这种鬼话）
+                        setPracticeSteps([]);
+                        setPracticeCursor(0);
+                      }}
                       disabled={practiceSteps.length === 0}
                     >
                       清空棋谱
@@ -754,13 +886,41 @@ export default function PracticePage() {
                   </div>
                   <div className="practice-readout">
                     <span className="practice-readout-label">手数</span>
-                    <span className="practice-readout-value">{practiceSteps.length}</span>
+                    <span className="practice-readout-value">
+                      {practiceCursor} / {practiceSteps.length}
+                    </span>
                   </div>
                   <div className="practice-readout">
                     <span className="practice-readout-label">视角</span>
                     <span className="practice-readout-value">
                       {flipped ? '黑方在下' : '白方在下'}
                     </span>
+                  </div>
+                  {/*
+                   * **上一步 / 下一步** —— 走错了不用重开：
+                   * 退回去改一步再继续下；在中间落新的一手，后面的旧着法自动作废。
+                   */}
+                  <div className="btn-row practice-history">
+                    <button
+                      className="btn small"
+                      onClick={() => setPracticeCursor((c) => Math.max(0, c - 1))}
+                      disabled={practiceCursor === 0}
+                      title="上一步"
+                    >
+                      <ChevronLeft size={15} aria-hidden="true" />
+                      上一步
+                    </button>
+                    <button
+                      className="btn small"
+                      onClick={() =>
+                        setPracticeCursor((c) => Math.min(practiceSteps.length, c + 1))
+                      }
+                      disabled={practiceCursor >= practiceSteps.length}
+                      title="下一步"
+                    >
+                      下一步
+                      <ChevronRight size={15} aria-hidden="true" />
+                    </button>
                   </div>
                   <div className="btn-row" style={{ marginTop: 'var(--sp-3)' }}>
                     <button

@@ -810,7 +810,15 @@ export class WsHub {
     }
     this.broadcastRoom(room);
     this.persist();
-    if (result.autoAccepted) {
+    if (result.direct) {
+      /*
+       * **直接撤回**（对方还没回应）→ 对方那边棋盘上的棋子退了回去，
+       * 他自己没动过手，得说一声是谁撤的。
+       */
+      const seat = this.rooms.findSeat(room, client.identity!.userId);
+      const other: Color = seat?.color === 'w' ? 'b' : 'w';
+      this.sendToColor(room, other, { t: 'toast', kind: 'info', message: '对方撤回了一步' });
+    } else if (result.autoAccepted) {
       this.send(client, { t: 'toast', kind: 'success', message: '电脑同意了悔棋，已撤销上一步' });
     } else {
       this.send(client, { t: 'toast', kind: 'info', message: '已发出悔棋请求，等待对方回应' });
@@ -830,7 +838,7 @@ export class WsHub {
     this.broadcastRoom(room);
     this.persist();
     if (by) {
-      this.sendToColor(room, by, { t: 'toast', kind: 'success', message: '对方同意悔棋，已撤销上一步' });
+      this.sendToColor(room, by, { t: 'toast', kind: 'success', message: '对方同意悔棋，已撤销你的那一步' });
     }
   }
 

@@ -5,19 +5,25 @@
  *   「教学练习」是一条**独立的机制**（课程演示 + 自己摆棋的沙盒），
  *   跟对局页的走子 / 复盘 / 私信都不是一回事，混进别的脚本会让失败难定位。
  *
- * 门禁清单（7 条，P1~P7）：
+ * 门禁清单（12 条，P1~P12）：
  *   P1  大厅有「教学练习」入口，点它真的进 /practice。
  *   P2  教学页：课程列表齐全；点「下一步」**棋盘局面真的变了**（不是只改文字），
  *       并且画出了「上一步」箭头。
  *   P3  「典型摆法」切过去：**棋盘换成摆法局面**（与演示局面不同），
  *       而且**不残留演示线的走子箭头**（箭头指的是另一手棋，画出来就是指错地方）。
- *   P4  自由练习：摆到一半（缺王）点「开始练习」→ **报错且不进练习阶段**。
- *   P5  合法局面 → 开始练习 → **双方都能走**（白走 e4、黑走 e5 都进棋谱）。
- *   P6  页面上**没有解释性文字**（不教用户怎么点 —— 界面要自解释）。
- *   P7  窄屏（430px）**不横向溢出**。
+ *   P4  **分类筛选**真的筛：点「应对」后列表里只剩应对课，且条数与按钮上的数字一致。
+ *   P5  **切线路真的换局面**：应对课有多条线路，切到另一条后棋盘上的子位必须不同。
+ *   P6  自由练习：摆到一半（缺王）点「开始练习」→ **报错且不进练习阶段**。
+ *   P7  合法局面 → 开始练习 → **双方都能走**（白走 e4、黑走 e5 都进棋谱）。
+ *   P8  页面上**没有解释性文字**（不教用户怎么点 —— 界面要自解释）。
+ *   P9  窄屏（430px）**不横向溢出**。
+ *   P10 自由练习的「上一步 / 下一步」**真的挪棋盘**：退一步局面回到上一手，
+ *       前进一手又回到原处；棋谱里当前手被标出来。
+ *   P11 在中间位置落新的一手 → **后面的旧着法被截断**（换了一条线）。
+ *   P12 练习页的棋盘**够大**（用户 2026-11-20 报「棋盘太小了，走起来很难受」）。
  *
  * 判定方式跟项目规矩一致：**进程退出码** + 门禁自己打印的 ❌ 行 + 门禁编号。
- * 每条门禁的失败信息都必须带上自己的编号（P1…P7）——
+ * 每条门禁的失败信息都必须带上自己的编号（P1…P9）——
  * 失败信息不带编号就会出现假绿（读的人不知道是哪一条挂的）。
  *
  * 用法：
@@ -198,9 +204,121 @@ async function main(): Promise<void> {
     });
 
     /* ================================================================ */
-    /* P4：缺王时不允许开始练习                                        */
+    /* P4：分类筛选真的筛                                              */
     /* ================================================================ */
-    await step('P4', '摆到一半（缺王）点「开始练习」→ 报错且不进练习阶段', async () => {
+    await step('P4', '分类筛选真的筛：点「应对」后只剩应对课，条数与按钮数字一致', async () => {
+      await page.clickText('button', '教学', '教学标签');
+      await sleep(400);
+      const all = await page.evaluate<number>(`document.querySelectorAll('.lesson-row').length`);
+      if (all < 20) throw new Error(`P4 课程列表只有 ${all} 课 —— 扩充没生效`);
+
+      /*
+       * 点筛选按钮必须**按容器限定**：课程行里也有「应对」两个字（那是分类徽标），
+       * 用全局文本搜索会点到课程行上，测的根本不是筛选 —— 这里直接按
+       * `.lesson-filter-chip` 找。
+       */
+      const clickFilter = async (label: string): Promise<boolean> =>
+        page.evaluate<boolean>(
+          `(() => {
+            const chip = Array.from(document.querySelectorAll('.lesson-filter-chip'))
+              .find((el) => (el.textContent || '').includes(${JSON.stringify(label)}));
+            if (!chip) return false;
+            chip.click();
+            return true;
+          })()`,
+        );
+
+      // 按钮上的数字 = 该分类有几课
+      const badge = await page.evaluate<string>(
+        `(() => {
+          const chip = Array.from(document.querySelectorAll('.lesson-filter-chip'))
+            .find((el) => (el.textContent || '').includes('应对'));
+          if (!chip) return '';
+          const count = chip.querySelector('.lesson-filter-count');
+          return count ? (count.textContent || '').trim() : '';
+        })()`,
+      );
+      if (!badge) throw new Error('P4 筛选行里找不到「应对」这一项');
+
+      if (!(await clickFilter('应对'))) throw new Error('P4 点不到「应对」筛选');
+      await sleep(400);
+      const filtered = await page.evaluate<number>(
+        `document.querySelectorAll('.lesson-row').length`,
+      );
+      if (Number(badge) !== filtered) {
+        throw new Error(`P4 按钮上写着 ${badge} 课，列表里却有 ${filtered}  条`);
+      }
+      if (filtered >= all) {
+        throw new Error(`P4 点了「应对」之后还是 ${filtered} 条（原来 ${all} 条）—— 没筛`);
+      }
+      // 剩下的必须全是应对课
+      const tags = await page.evaluate<string[]>(
+        `Array.from(document.querySelectorAll('.lesson-row .lesson-row-tag')).map((el) => (el.textContent || '').trim())`,
+      );
+      const wrong = tags.filter((t) => t !== '应对');
+      if (wrong.length > 0) {
+        throw new Error(`P4 筛完还混着别的分类：${wrong.join(' / ')}`);
+      }
+      await shot(page, 'p4-filter-counters');
+      if (!(await clickFilter('全部'))) throw new Error('P4 点不到「全部」筛选');
+      await sleep(300);
+    });
+
+    /* ================================================================ */
+    /* P5：切线路真的换局面                                            */
+    /* ================================================================ */
+    await step('P5', '应对课切到另一条线路，棋盘局面必须换掉', async () => {
+      await page.clickText('button', '对付后翼弃兵', '对付后翼弃兵');
+      await sleep(400);
+
+      const chips = await page.evaluate<string[]>(
+        `Array.from(document.querySelectorAll('.lesson-line-chip')).map((el) => (el.textContent || '').trim())`,
+      );
+      if (chips.length < 2) {
+        throw new Error(`P5 这课只有 ${chips.length} 条线路（${chips.join(' / ')}）—— 没有可切的`);
+      }
+
+      // 主线走到头，记下子位
+      for (let i = 0; i < 12; i += 1) {
+        const disabled = await page.evaluate<boolean>(
+          `(() => { const b = Array.from(document.querySelectorAll('button')).find((x) => (x.textContent || '').trim() === '下一步'); return !b || b.disabled; })()`,
+        );
+        if (disabled) break;
+        await page.clickText('button', '下一步', '下一步');
+        await sleep(120);
+      }
+      await sleep(300);
+      const mainSquares = await page.evaluate<string[]>(PIECE_SQUARES_EXPR);
+
+      // 切到第二条线路，走到底，记下子位
+      await page.evaluate(
+        `document.querySelectorAll('.lesson-line-chip')[1].click()`,
+      );
+      await sleep(400);
+      const resetSquares = await page.evaluate<string[]>(PIECE_SQUARES_EXPR);
+      if (resetSquares.join() === mainSquares.join()) {
+        throw new Error('P5 切线路后棋盘没回到起点 —— 换线没有重置进度');
+      }
+      for (let i = 0; i < 12; i += 1) {
+        const disabled = await page.evaluate<boolean>(
+          `(() => { const b = Array.from(document.querySelectorAll('button')).find((x) => (x.textContent || '').trim() === '下一步'); return !b || b.disabled; })()`,
+        );
+        if (disabled) break;
+        await page.clickText('button', '下一步', '下一步');
+        await sleep(120);
+      }
+      await sleep(300);
+      const altSquares = await page.evaluate<string[]>(PIECE_SQUARES_EXPR);
+      if (altSquares.join() === mainSquares.join()) {
+        throw new Error('P5 两条线路走到最后是同一个局面 —— 切换是摆设');
+      }
+      await shot(page, 'p5-line-switch');
+    });
+
+    /* ================================================================ */
+    /* P6：缺王时不允许开始练习                                        */
+    /* ================================================================ */
+    await step('P6', '摆到一半（缺王）点「开始练习」→ 报错且不进练习阶段', async () => {
       await page.clickText('button', '自由练习', '自由练习');
       await sleep(400);
       await page.clickText('button', '清空', '清空');
@@ -223,9 +341,9 @@ async function main(): Promise<void> {
     });
 
     /* ================================================================ */
-    /* P5：合法局面 → 开始练习 → 双方都能走                            */
+    /* P7：合法局面 → 开始练习 → 双方都能走                            */
     /* ================================================================ */
-    await step('P5', '开始练习后双方都能走，棋谱如实记录', async () => {
+    await step('P7', '开始练习后双方都能走，棋谱如实记录', async () => {
       await page.clickText('button', '初始摆法', '初始摆法');
       await sleep(300);
       await page.clickText('button', '开始练习', '开始练习');
@@ -247,48 +365,176 @@ async function main(): Promise<void> {
         `((document.querySelector('.practice-notation') || {}).textContent || '').replace(/\\s+/g, ' ').trim()`,
       );
       if (!notation.includes('e4') || !notation.includes('e5')) {
-        throw new Error(`P5 棋谱里没有双方的着法（读到「${notation}」）`);
+        throw new Error(`P7 棋谱里没有双方的着法（读到「${notation}」）`);
       }
       const meta = await page.evaluate<string>(
         `((document.querySelector('.practice-col-left .section-meta') || {}).textContent || '').trim()`,
       );
       if (!meta.includes('2')) {
-        throw new Error(`P5 手数不对（读到「${meta}」）`);
+        throw new Error(`P7 手数不对（读到「${meta}」）`);
       }
-      await shot(page, 'p5-free-play');
+      await shot(page, 'p7-free-play');
     });
 
     /* ================================================================ */
-    /* P6：没有解释性文字                                              */
+    /* P8：没有解释性文字                                              */
     /* ================================================================ */
-    await step('P6', '页面上没有「教你怎么点」的解释性文字', async () => {
+    await step('P8', '页面上没有「教你怎么点」的解释性文字', async () => {
       const text = await page.evaluate<string>(
         `(document.querySelector('main') || document.body).innerText`,
       );
       const banned = ['点击', '右键', '拖拽', '拖动棋子', '怎么用', '使用方法', '第一步先'];
       const hits = banned.filter((w) => text.includes(w));
       if (hits.length > 0) {
-        throw new Error(`P6 页面上出现了交互说明文字：${hits.join(' / ')}`);
+        throw new Error(`P8 页面上出现了交互说明文字：${hits.join(' / ')}`);
       }
     });
 
     /* ================================================================ */
-    /* P7：窄屏不横向溢出                                              */
+    /* P10：上一步 / 下一步真的挪棋盘                                  */
     /* ================================================================ */
-    await step('P7', '窄屏（430px）不横向溢出', async () => {
+    await step('P10', '自由练习的「上一步 / 下一步」真的挪棋盘、标出当前手', async () => {
+      /*
+       * 前置：P7 已经走了白 e4、黑 e5 两手，棋盘在第 2 手之后。
+       *
+       * 判据不能只看「按钮点了没反应」—— 必须看**棋盘上的子真的动了**：
+       *   ① 点「上一步」→ 黑兵退回 e7（不再在 e5）；
+       *   ② 「手数」读数变成 1 / 2（当前位置 / 总手数）；
+       *   ③ 棋谱里**当前手**被标出来（`.san.current`，只标当前那一手）；
+       *   ④ 点「下一步」→ 黑兵回到 e5，手数回到 2 / 2。
+       */
+      const readHandCount = async (): Promise<string> =>
+        await page.evaluate<string>(`
+          (() => {
+            const rows = [...document.querySelectorAll('.practice-readout')];
+            const row = rows.find((r) => (r.querySelector('.practice-readout-label')?.textContent ?? '').trim() === '手数');
+            return ((row?.querySelector('.practice-readout-value')?.textContent ?? '')).replace(/\s+/g, ' ').trim();
+          })()
+        `);
+      const readCurrentSan = async (): Promise<string[]> =>
+        await page.evaluate<string[]>(`
+          [...document.querySelectorAll('.practice-notation .san.current')].map((el) => (el.textContent ?? '').trim())
+        `);
+
+      const before = await page.evaluate<string[]>(PIECE_SQUARES_EXPR);
+      if (!before.includes('e5')) {
+        throw new Error(`P10 前置条件不成立：黑兵不在 e5（读到 ${before.join(',')}）—— 后面这条判据会恒真`);
+      }
+
+      await page.clickText('button', '上一步', '上一步');
+      await sleep(500);
+      const afterPrev = await page.evaluate<string[]>(PIECE_SQUARES_EXPR);
+      const handAfterPrev = await readHandCount();
+      const currentSan = await readCurrentSan();
+
+      if (afterPrev.includes('e5')) {
+        throw new Error(`P10 点「上一步」之后黑兵还在 e5（${afterPrev.join(',')}）—— 棋盘没退回去`);
+      }
+      if (!afterPrev.includes('e7')) {
+        throw new Error(`P10 点「上一步」之后 e7 上没有黑兵（${afterPrev.join(',')}）`);
+      }
+      if (!handAfterPrev.includes('1')) {
+        throw new Error(`P10 点「上一步」之后「手数」读数不对（读到「${handAfterPrev}」）`);
+      }
+      if (currentSan.length !== 1 || currentSan[0] !== 'e4') {
+        throw new Error(`P10 棋谱里当前手没标对（标了 ${currentSan.join('/') || '（没有）'}，应该是 e4）`);
+      }
+
+      await page.clickText('button', '下一步', '下一步');
+      await sleep(500);
+      const afterNext = await page.evaluate<string[]>(PIECE_SQUARES_EXPR);
+      const handAfterNext = await readHandCount();
+      if (!afterNext.includes('e5')) {
+        throw new Error(`P10 点「下一步」之后黑兵没回到 e5（${afterNext.join(',')}）`);
+      }
+      if (!handAfterNext.includes('2')) {
+        throw new Error(`P10 点「下一步」之后「手数」读数不对（读到「${handAfterNext}」）`);
+      }
+      await shot(page, 'p10-history-nav');
+    });
+
+    /* ================================================================ */
+    /* P11：在中间落新的一手 → 后面的旧着法被截断                     */
+    /* ================================================================ */
+    await step('P11', '退回去再落新的一手 → 后面的旧着法被截断', async () => {
+      /*
+       * 退到第 1 手（白 e4 之后），此时白方马还能走 g1→f3。
+       * 落这一步 = 换了一条线 —— 原来的「e5」那手**不再成立**，必须被截断。
+       *
+       * 判据：棋谱里只剩 e4 + Nf3，**不能再有 e5**。
+       */
+      await page.clickText('button', '上一步', '上一步');
+      await sleep(400);
+      const handBefore = await page.evaluate<string>(
+        `(() => {
+          const rows = [...document.querySelectorAll('.practice-readout')];
+          const row = rows.find((r) => (r.querySelector('.practice-readout-label')?.textContent ?? '').trim() === '手数');
+          return ((row?.querySelector('.practice-readout-value')?.textContent ?? '')).replace(/\s+/g, ' ').trim();
+        })()
+      `,
+      );
+      if (!handBefore.includes('1')) {
+        throw new Error(`P11 前置条件不成立：退一步之后「手数」读数是「${handBefore}」，应该停在第 1 手`);
+      }
+
+      await page.evaluate(`document.querySelector('[data-square="g1"]').click()`);
+      await sleep(250);
+      await page.evaluate(`document.querySelector('[data-square="f3"]').click()`);
+      await sleep(500);
+
+      const notation = await page.evaluate<string>(
+        `((document.querySelector('.practice-notation') || {}).textContent || '').replace(/\s+/g, ' ').trim()`,
+      );
+      if (!notation.includes('Nf3')) {
+        throw new Error(`P11 新落的一手没进棋谱（读到「${notation}」）`);
+      }
+      if (notation.includes('e5')) {
+        throw new Error(`P11 后面的旧着法没有被截断（棋谱里还有 e5：「${notation}」）`);
+      }
+      await shot(page, 'p11-truncate');
+    });
+
+    /* ================================================================ */
+    /* P12：练习页棋盘够大                                            */
+    /* ================================================================ */
+    await step('P12', '练习页的棋盘够大（不再挤成一小块）', async () => {
+      /*
+       * 用户 2026-11-20 原话：「练习的棋盘太小了，走起来很难受」。
+       *
+       * 判据：1440×950 视口下，棋盘宽度 **≥ 600px**。
+       * 改之前这一列只有 320+330 的固定宽 + 1080 的容器 → 棋盘约 358px；
+       * 改用和对局页一样的宽容器之后约 700px。
+       */
+      const boardWidth = await page.evaluate<number>(`
+        (() => {
+          const el = document.querySelector('.board2d');
+          if (!el) return 0;
+          return el.getBoundingClientRect().width;
+        })()
+      `);
+      if (boardWidth < 600) {
+        throw new Error(`P12 练习页棋盘只有 ${Math.round(boardWidth)}px 宽（要 ≥ 600px）—— 还是那么难走`);
+      }
+      await shot(page, 'p12-board-size');
+    });
+
+    /* ================================================================ */
+    /* P9：窄屏不横向溢出                                              */
+    /* ================================================================ */
+    await step('P9', '窄屏（430px）不横向溢出', async () => {
       await page.setViewport(430, 900);
       await sleep(600);
       const overflow = await page.evaluate<number>(
         `document.documentElement.scrollWidth - document.documentElement.clientWidth`,
       );
       if (overflow > 1) {
-        throw new Error(`P7 430px 视口横向溢出 ${overflow}px`);
+        throw new Error(`P9 430px 视口横向溢出 ${overflow}px`);
       }
     });
 
     console.log('');
     if (failures === 0) {
-      console.log('✅ 教学练习门禁全部通过（7 条）');
+      console.log('✅ 教学练习门禁全部通过（12 条）');
     } else {
       console.log(`❌ 教学练习门禁有 ${failures} 条没过`);
     }

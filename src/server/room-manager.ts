@@ -28,6 +28,7 @@ import {
   type TimeControlKey,
 } from '../lib/constants';
 import { applyMoveToGame, describeResult, statusOf, turnOf } from '../lib/chess-engine';
+import { isRuleEnd } from '../lib/takeback';
 import { analyzePosition } from '../lib/engine/analysis';
 import type {
   ChatMessage,
@@ -1158,24 +1159,32 @@ export class RoomManager {
   }
 
   /**
-   * 发起悔棋请求。
+   * 发起悔棋。
    *
-   * 对方同意后撤销**请求方自己走的那一步**（用户 2026-11-10 拍板）：
-   *   - 只撤**请求方自己**的那一步，撤完**轮回到请求方**重走；
-   *   - 因为只能撤自己那一步，所以悔棋**只能在「我刚走完、对方还没回应」时**发起
-   *     —— 对方的着法是踩在我那一步上算的，单独撤掉我那一步在规则上无解；
-   *   - **棋钟不回退**：时间照常走，悔棋者重新开始计时
-   *     （对方思考的那段时间算对方的，不转嫁给悔棋者）。
+   * **两种模式**（用户 2026-11-20 拍板）：
+   *
+   *  - **A. 我刚走完、对方还没回应** → **直接撤**我那一步，不用问对方。
+   *    对方的着法还没建立在这一步上，撤掉它不影响任何人，直接撤最省事。
+   *
+   *  - **B. 对方已经回应** → **申请**；对方同意后撤**两步**
+   *    （对方的应手 + 我的那一步），撤完**轮回到我**重走。
+   *    为什么必须撤两步：对方的应手是踩在我那一步上算的，
+   *    单独撤掉我那一步在规则上无解（撤完轮次也对不上）。
+   *
+   * **棋钟不回退**（沿用 2026-11-10 拍板）：时间照常走，悔棋者重新开始计时。
+   *
+   * **终局也能悔**（2026-11-20 拍板）：自己那一步直接把对方将死/逼和了，
+   * 照样能撤 —— 但**只有「棋盘规则」判出来的终局**能悔。
+   * 认输 / 双方同意和棋 / 超时判负 / 弃权都是**人的决定**，撤一步改不了它。
    *
    * 对方是 AI 时视为**自动同意**（AI 没有「同意/反对」这个交互）。
    */
   offerTakeback(
     room: RoomInternal,
     identity: PlayerIdentity,
-  ): { ok: true; autoAccepted: boolean } | { ok: false; message: string } {
+  ): { ok: true; autoAccepted: boolean; direct: boolean } | { ok: false; message: string } {
     const seat = this.findSeat(room, identity.userId);
     if (!seat) return { ok: false, message: '你不在该对局中' };
-    if (room.status !== 'playing') return { ok: false, message: '当前无法悔棋' };
     if (room.drawOffer || room.takebackOffer) return { ok: false, message: '已有待回应的请求' };
     if (room.moves.length === 0) return { ok: false, message: '还没有可以悔的棋' };
     // 必须**自己走过棋**才有得可悔
@@ -1183,25 +1192,32 @@ export class RoomManager {
       return { ok: false, message: '你还没有走过棋' };
     }
     /*
-     * 只能悔**自己刚走的那一步**（用户拍板：只撤销你自己走的那一步，
-     * 对方同意后轮到你重走）。
+     * 终局：只有**棋盘规则**判出来的终局能悔。
      *
-     * 所以必须「我刚走完、对方还没回应」——
-     * 否则对方的着法是踩在我那一步上算的，单独撤掉我那一步就无解了
-     * （那种情况以前是把对方的回应一起撤掉，那就不是「只撤自己那一步」了）。
+     * 认输 / 双方同意和棋 / 超时判负 / 弃权 —— 这些是**人做出来的决定**，
+     * 撤掉一步棋改不了它（对方认输了，你把棋退回去，这局算什么？）。
      */
-    const lastMove = room.moves[room.moves.length - 1];
-    if (lastMove.color !== seat.color) {
-      return { ok: false, message: '对方已经回应，这一步不能悔了' };
+    if (room.status !== 'playing' && !isRuleEnd(room.result?.reason)) {
+      return { ok: false, message: '对局已经结束，不能悔棋' };
     }
+
+    const lastMove = room.moves[room.moves.length - 1];
+    if (lastMove.color === seat.color) {
+      // **A：对方还没回应** → 直接撤，不用问对方
+      const done = this.applyTakeback(room, seat.color);
+      if (!done.ok) return { ok: false, message: done.message };
+      return { ok: true, autoAccepted: true, direct: true };
+    }
+
+    // **B：对方已经回应** → 需要对方同意
     const opponent = seat.color === 'w' ? room.seats.b : room.seats.w;
     if (opponent?.isAI) {
       const done = this.applyTakeback(room, seat.color);
       if (!done.ok) return { ok: false, message: done.message };
-      return { ok: true, autoAccepted: true };
+      return { ok: true, autoAccepted: true, direct: false };
     }
     room.takebackOffer = { by: seat.color, deadline: Date.now() + OFFER_TIMEOUT_MS };
-    return { ok: true, autoAccepted: false };
+    return { ok: true, autoAccepted: false, direct: false };
   }
 
   /** 同意悔棋 → 真的撤销那一步 */
@@ -1303,14 +1319,14 @@ export class RoomManager {
   }
 
   /**
-   * 真正执行悔棋：把**请求方自己那一步**撤掉，轮次回到请求方。
+   * 真正执行悔棋：撤掉**请求方自己那一步**，轮次回到请求方。
    *
-   * 规则（用户 2026-11-10 拍板）：
-   *   - **只撤销你自己走的那一步**，对方同意后**轮到你重走**；
-   *   - 因为只能撤自己那一步，所以悔棋**只能在你刚走完、对方还没回应时**发起
-   *     （否则对方的着法是踩在你那步上算的，撤掉你那步就无解了）。
-   *   - **棋钟不回退**：时间照常走，悔棋者重新开始计时
-   *     （对方思考的那段时间算对方的，不转嫁给悔棋者）。
+   * 规则（用户 2026-11-20 拍板）：
+   *   - **对方还没回应**（最后一步是请求方的）→ 撤**一步**；
+   *   - **对方已经回应**（最后一步是对方的）→ 撤**两步**
+   *     （对方的应手 + 请求方那一步）—— 对方的应手是踩在请求方那步上算的，
+   *     单独撤掉请求方那一步在规则上无解。撤完两步，轮次正好回到请求方。
+   *   - **棋钟不回退**：时间照常走，悔棋者重新开始计时。
    *
    * @param requester 发起悔棋的一方（撤销的是**他**走的那一步）
    */
@@ -1321,32 +1337,51 @@ export class RoomManager {
     const moves = room.moves;
     if (moves.length === 0) return { ok: false, message: '还没有可以悔的棋' };
     const last = moves[moves.length - 1];
-    if (!last || last.color !== requester) {
-      return { ok: false, message: '只能悔自己刚走的那一步（对方已经回应了）' };
-    }
-    const stackLen = room.moves.length;
-    if (stackLen < 1) return { ok: false, message: '棋谱与局面记录不一致' };
+    if (!last) return { ok: false, message: '棋谱与局面记录不一致' };
 
     /*
-     * 棋钟**不回退**，但对方思考的这段时间要算**对方**的：
-     * 悔棋之前轮到的还是对方（请求方走完就轮到对方了），
-     * 所以先把这段 elapsed 结算到对方头上，再把轮次交回请求方。
-     * 否则这段时间会被算到请求方头上 —— 等于让对方替他付账。
+     * 撤几步：
+     *  - 最后一步是请求方的 → 撤**一步**（对方还没回应）；
+     *  - 最后一步是对方的 → 撤**两步**（对方的应手 + 请求方那一步）。
+     *
+     * 撤两步的原因：对方的应手是踩在请求方那一步上算出来的，
+     * 单独撤掉请求方那一步，棋局在规则上无解（轮次也对不上）。
+     * 撤完两步，轮次正好回到请求方 —— 轮到他重走。
+     */
+    let plies = 1;
+    if (last.color !== requester) {
+      const prev = moves[moves.length - 2];
+      if (!prev || prev.color !== requester) {
+        return { ok: false, message: '只能悔自己走的那一步' };
+      }
+      plies = 2;
+    }
+
+    /*
+     * 棋钟**不回退**，但这一段等待要算**该算的人**的：
+     *  - 撤一步时（对方还没回应）：轮到的是**对方** → 这段时间算对方的，
+     *    撤完轮次交回请求方。否则这段时间会被算到请求方头上 ——
+     *    等于让对方替他付账。
+     *  - 撤两步时（对方已经回应）：轮到的是**请求方自己** → 算他的。
      */
     if (room.clock.running) this.settleClock(room, turnOf(room.fen));
 
     /*
-     * 撤掉请求方那一步。
+     * 撤掉那一步（或那两步）。
      *
      * 用**活实例的 undo()**，而不是「拿一个旧 FEN 覆盖回去」：
      *  - undo() 会连带把 chess.js 内部的**局面出现次数**退回去，
      *    三次重复的计数才不会错位；
      *  - undo() 顺带把吃路兵目标格、50 回合计数、回合数一并还原。
      */
-    const undone = room.game.undo();
-    if (!undone) return { ok: false, message: '棋谱与局面记录不一致' };
+    let undone = 0;
+    for (let i = 0; i < plies; i += 1) {
+      const popped = room.game.undo();
+      if (!popped) return { ok: false, message: '棋谱与局面记录不一致' };
+      moves.pop();
+      undone += 1;
+    }
     room.fen = room.game.fen();
-    moves.pop();
     room.clock.lastTickAt = Date.now();
 
     // 撤销的可能是一步杀棋 → 局面重新判定（回到「进行中」）
@@ -1366,8 +1401,10 @@ export class RoomManager {
     room.drawOffer = undefined;
     room.drawDeadline = undefined;
     room.takebackOffer = undefined;
+    // 局面变了，之前攒的「再来一局」票也作废（这局还没完）
+    room.rematchVotes = [];
     room.updatedAt = Date.now();
-    return { ok: true, undone: 1 };
+    return { ok: true, undone };
   }
 
   /** 申请再来一局 */

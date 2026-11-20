@@ -400,7 +400,15 @@ const MUTATIONS: Mutation[] = [
   {
     name: '【十一】HUD 里没有「悔棋」按钮了',
     file: 'src/app/room/[code]/page.tsx',
-    from: "<button\n                          className=\"btn small\"\n                          onClick={() => send({ t: 'takeback.offer' })}\n                          disabled={!canOfferTakeback}\n                          title={\n                            canOfferTakeback\n                              ? '悔掉你刚走的那一步（对方同意后轮到你重走）'\n                              : '只能悔自己刚走的那一步 —— 对方已经回应了就不能悔了'\n                          }\n                        >\n                          <Undo2 size={15} aria-hidden=\"true\" />\n                          悔棋\n                        </button>",
+    from: `                        <button
+                          className="btn small"
+                          onClick={() => send({ t: 'takeback.offer' })}
+                          disabled={!canOfferTakeback}
+                          title={takebackTitle}
+                        >
+                          <Undo2 size={15} aria-hidden="true" />
+                          悔棋
+                        </button>`,
     to: '',
     kind: 'browser',
     expect: 'G22',
@@ -429,11 +437,15 @@ const MUTATIONS: Mutation[] = [
   {
     name: '【十一】点「悔棋」不把请求发给服务端',
     file: 'src/app/room/[code]/page.tsx',
-    from: "onClick={() => send({ t: 'takeback.offer' })}",
-    to: "onClick={() => { /* 不发请求 */ }}",
+    // 注意：现在页面里有**两个**「悔棋」按钮（对局中 + 终局），
+    // 所以目标串要带上 `disabled={!canOfferTakeback}` 才唯一。
+    from: `                          onClick={() => send({ t: 'takeback.offer' })}
+                          disabled={!canOfferTakeback}`,
+    to: `                          onClick={() => { /* 不发请求 */ }}
+                          disabled={!canOfferTakeback}`,
     kind: 'browser',
-    // 由 G28 抓：浏览器**自己**点「悔棋」→ 对手必须真的收到这个请求。
-    // （G25 抓不到这条 —— G25 里浏览器是**回应方**，请求由对手发起。）
+    // 由 G28 抓：浏览器刚走完就点「悔棋」→ 那一步必须**当场退回去**。
+    // （点不动 = 不发消息 = 服务端收不到 = 棋盘不会变。）
     expect: 'G28',
   },
   {
@@ -656,36 +668,36 @@ const MUTATIONS: Mutation[] = [
   /* ---------- 阶段十三：悔棋的三条规则（用户 2026-11-10 拍板） ---------- */
   {
     /*
-     * 规则一：**只撤销你自己走的那一步**，对方同意后轮到你重走。
-     * 这条把 applyTakeback 改回「连对方的回应一起撤两步」。
+     * 规则一（2026-11-20 版）：**我刚走完、对方还没回应时只撤我那一步**；
+     * 对方已经回应时撤**两步**（对方的应手 + 我的那一步）。
+     *
+     * 这条把「撤几步」的判断改坏：**直接撤回也撤两步** ——
+     * 多撤了对方的应手，单测「A：撤的是我那一步，对方的应手留着」变红。
      */
-    name: '【十三】悔棋撤两步（连对方的回应一起撤，不是「只撤自己那一步」）',
+    name: '【十三】直接撤回也撤两步（多撤了对方的应手）',
     file: 'src/server/room-manager.ts',
-    // 实现已经换成「用活实例的 undo()」（上一步悔棋规则落地时改的），
-    // 原来的 fenStack 写法没了 → 变异改成**连撤两步**（undo 两次）。
-    from: `    const undone = room.game.undo();
-    if (!undone) return { ok: false, message: '棋谱与局面记录不一致' };`,
-    to: `    room.game.undo();
-    const undone = room.game.undo();
-    if (!undone) return { ok: false, message: '棋谱与局面记录不一致' };`,
+    from: `    let plies = 1;
+    if (last.color !== requester) {`,
+    to: `    let plies = 2;
+    if (last.color !== requester) {`,
     kind: 'unit',
     expect: 'tests/room-manager.test.ts',
   },
   {
     /*
-     * 规则二的**服务端一半**：对方已经回应后**不允许**再申请悔棋。
-     * 这条把服务端那道拦截去掉 → 单测「对方已经回应时不能再悔棋」变红。
+     * 规则二的**服务端一半**：对方已经回应 → 走「申请对方同意」那条路，
+     * **不能自己就把棋撤了**。
+     *
+     * 这条把挂请求那一段改成「直接撤」→ 单测
+     * 「B：对方已经回应 → 挂起请求，棋谱先不动」变红。
      */
-    name: '【十三】对方已经回应后服务端不再拦（还能申请悔棋）',
+    name: '【十三】对方已经回应后不挂请求（自己就把棋撤了）',
     file: 'src/server/room-manager.ts',
-    from: `    const lastMove = room.moves[room.moves.length - 1];
-    if (lastMove.color !== seat.color) {
-      return { ok: false, message: '对方已经回应，这一步不能悔了' };
-    }`,
-    to: `    const lastMove = room.moves[room.moves.length - 1];
-    if (lastMove.color !== seat.color && room.moves.length > 100000) {
-      return { ok: false, message: '对方已经回应，这一步不能悔了' };
-    }`,
+    from: `    room.takebackOffer = { by: seat.color, deadline: Date.now() + OFFER_TIMEOUT_MS };
+    return { ok: true, autoAccepted: false, direct: false };`,
+    to: `    const doneB = this.applyTakeback(room, seat.color);
+    if (!doneB.ok) return { ok: false, message: doneB.message };
+    return { ok: true, autoAccepted: true, direct: true };`,
     kind: 'unit',
     expect: 'tests/room-manager.test.ts',
   },
@@ -696,26 +708,63 @@ const MUTATIONS: Mutation[] = [
      */
     name: '【十三】悔棋时把对方思考的时间算到悔棋者头上（棋钟被转嫁）',
     file: 'src/server/room-manager.ts',
-    from: '     * 否则这段时间会被算到请求方头上 —— 等于让对方替他付账。\n     */\n    if (room.clock.running) this.settleClock(room, turnOf(room.fen));',
-    to: '     * 否则这段时间会被算到请求方头上 —— 等于让对方替他付账。\n     */\n    if (room.clock.running) this.settleClock(room, requester);',
+    from: `     *  - 撤两步时（对方已经回应）：轮到的是**请求方自己** → 算他的。
+     */
+    if (room.clock.running) this.settleClock(room, turnOf(room.fen));`,
+    to: `     *  - 撤两步时（对方已经回应）：轮到的是**请求方自己** → 算他的。
+     */
+    if (room.clock.running) this.settleClock(room, requester);`,
     kind: 'unit',
     expect: 'tests/room-manager.test.ts',
   },
   {
     /*
      * 规则二的**客户端一半**：悔棋按钮的可点条件。
-     * 去掉「最后一步必须是我」这一条 → 对方刚走完时按钮也变成可点 → G25c 变红。
+     *
+     * 2026-11-20 起对方回应之后**也**能悔（只是要走申请），
+     * 所以这条变异是**把老规则装回去**（「最后一步必须是我走的」才让点）
+     * → 对方已经回应时按钮变灰 → G25c 变红。
      */
-    name: '【十三】悔棋按钮不看「最后一步是不是我走的」（对方回应后也能点）',
+    name: '【十三】悔棋按钮按老规则来（对方回应后就不给点了）',
     file: 'src/app/room/[code]/page.tsx',
     from: `  const canOfferTakeback = Boolean(
-    myColor && !isSpectator && !hasPendingOffer && lastMoveColor === myColor,
+    myColor && !isSpectator && !hasPendingOffer && iHaveMoved && lastMoveColor && endAllowsTakeback,
   );`,
     to: `  const canOfferTakeback = Boolean(
-    myColor && !isSpectator && !hasPendingOffer,
+    myColor && !isSpectator && !hasPendingOffer && iHaveMoved && lastMoveColor === myColor,
   );`,
     kind: 'browser',
     expect: 'G25c',
+  },
+  {
+    /*
+     * 规则一的**服务端一半**：我刚走完、对方还没回应 → **直接撤回**，
+     * 不该等对方点头。
+     *
+     * 这条把「直接撤」改成「也挂请求等对方同意」→
+     * 单测「A：我刚走完、对方还没回应 → 直接撤回，不用对方同意」变红。
+     */
+    name: '【十三】直接撤回改成也走请求（要等对方点头才撤）',
+    file: 'src/server/room-manager.ts',
+    from: `      const done = this.applyTakeback(room, seat.color);
+      if (!done.ok) return { ok: false, message: done.message };
+      return { ok: true, autoAccepted: true, direct: true };`,
+    to: `      room.takebackOffer = { by: seat.color, deadline: Date.now() + OFFER_TIMEOUT_MS };
+      return { ok: true, autoAccepted: false, direct: false };`,
+    kind: 'unit',
+    expect: 'tests/room-manager.test.ts',
+  },
+  {
+    /*
+     * 规则二的**另一半**：对方已经回应 → 撤**两步**（对方的应手 + 我的那一步）。
+     * 这条改成只撤一步 → 单测「B：对方同意后撤两步」变红。
+     */
+    name: '【十三】对方同意后只撤一步（该撤两步的没撤够）',
+    file: 'src/server/room-manager.ts',
+    from: `      plies = 2;`,
+    to: `      plies = 1;`,
+    kind: 'unit',
+    expect: 'tests/room-manager.test.ts',
   },
 ];
 

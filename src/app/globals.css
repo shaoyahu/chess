@@ -355,6 +355,21 @@ button {
   white-space: nowrap;
 }
 
+/*
+ * 课程详情头：中文标题**不折行**。
+ *
+ * 应对课的名字有六七个字（「对付后翼弃兵」「对付意大利开局」），
+ * 右侧又跟着一个不短的英文名 —— 挤不下时中文标题会被折成两行，
+ * 看起来像坏了。所以：标题写成一行，空间不够就让英文名换到下一行。
+ */
+.practice-col-right .section-head {
+  flex-wrap: wrap;
+}
+
+.practice-col-right .section-title .zh {
+  white-space: nowrap;
+}
+
 /* ---------- 按钮 ---------- */
 
 .btn {
@@ -1053,9 +1068,24 @@ button {
   gap: var(--sp-2);
 }
 
-/* 宽屏：HUD 卡顶对齐棋盘上沿 */
+/*
+ * 宽屏：HUD 卡顶对齐棋盘上沿。
+ *
+ * 左列现在装**两块**：HUD 卡 + 棋谱记谱卡。
+ * 所以这一列得是**定高的 flex 列**（记谱卡吃掉 HUD 之下的剩余高度），
+ * 高度闸门跟右列 `.col-chat` 是同一道（`max-height: var(--board-vh)`）——
+ * 页面不被顶出滚动条全靠它（G21 守右列那一道，左列共用同一道）。
+ */
 .layout-wide .col-hud {
-  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: var(--board-vh);
+}
+
+/* HUD 卡保持自然高度，剩余空间全给记谱卡 */
+.layout-wide .col-hud > .hud {
+  flex: 0 0 auto;
 }
 
 /* 宽屏：聊天块撑满与棋盘等高，记录区自己长大 */
@@ -2127,6 +2157,36 @@ button {
   text-align: center;
 }
 
+/* ---------- 遮罩基座 ---------- */
+
+/*
+ * `.overlay` 是**所有弹层遮罩的基座** —— 升变、聊天、设置、棋谱都复用它。
+ *
+ * ⚠️ 这条规则**必须写在所有变体（`.chat-overlay` / `.notation-overlay` …）之前**。
+ *
+ * 变体和基座**权重相同**（都是单类），所以**后写的赢**。
+ * 一旦基座写在变体后面，它那两句 `align-items: center; justify-content: center`
+ * 会把变体的定位**整个盖掉** —— 变体明明写了 `align-items: flex-end`
+ * （贴底），实际却被摆到了正中间。
+ *
+ * 这不是理论问题：基座原来写在文件更靠后的位置（升变选择那一段），
+ * 于是「贴屏幕底部」的聊天弹层**一直停在垂直居中**，
+ * 而想贴右边的棋谱抽屉变成了**横在棋盘正中的全高竖条**，
+ * 把棋盘劈成两半（用户截图里就是这个样子）。
+ * 加变体时，把新规则写在基座**后面**。
+ */
+.overlay {
+  position: fixed;
+  inset: 0;
+  /* 亮色主题：遮罩别压太黑，否则弹窗之外的页面反而更暗 */
+  background: rgba(30, 42, 60, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  animation: fade-in 0.15s ease-out;
+}
+
 /* ---------- 聊天记录弹层（窄屏点「聊天」展开） ---------- */
 
 /*
@@ -2307,40 +2367,59 @@ button {
 }
 
 /*
- * 棋谱抽屉 —— 从**右侧**滑出来。
+ * 棋谱 —— 两种形态，**都不是「压在棋盘上的那种弹窗」**。
  *
- * 样式与聊天弹层**同一套**（同样的底色 / 边框 / 圆角 / 阴影 / 头部），
- * 只是方向不同：聊天是底部弹层，棋谱是右侧抽屉。
- * 底部带「复制 PGN」按钮。
+ * 宽屏（`.layout-wide`）：左栏**常驻一张记谱卡**（`.notation-card`）。
+ *   棋谱是「边下边看」的参照信息。做成弹窗就会压暗整页、盖住右边的聊天，
+ *   还会挡住棋盘 —— 恰恰在最想看棋谱的时候最挡事（用户原话：
+ *   「这个棋谱的弹窗的样式有点问题…是不是就不适合做成弹窗」）。
+ *   记谱卡在**文档流**里：棋盘一点不被压，聊天照旧，走的是左列的空位
+ *   —— 就是线下记谱纸摆在棋盘旁边的那个位置。
+ *
+ * 窄屏（`.layout-narrow`）：左栏变成顶部一整条，常驻卡会把棋盘挤没，
+ *   所以窄屏走**底部弹层**（`.notation-overlay` + `.notation-panel`），
+ *   跟聊天弹层同一套：同样的底色 / 边框 / 圆角 / 阴影 / 头部。
  */
+
+/* ---- 宽屏：左栏记谱卡 ---- */
+.notation-card {
+  display: flex;
+  flex-direction: column;
+  /* 吃掉 HUD 之下的剩余高度；min-height:0 允许它被压扁而不撑破左列 */
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* 不加投影 —— 跟上面的 HUD 卡同一套（投影会糊到棋盘上，见 .hud 的注释） */
+  box-shadow: none;
+  overflow: hidden;
+}
+
+/* 卡里的着法列表：吃掉头部与底栏之外的高度，多了在自己这儿滚 */
+.notation-card .notation-list {
+  min-height: 0;
+}
+
+/* ---- 窄屏：底部弹层 ---- */
 .notation-overlay {
-  align-items: stretch;
-  justify-content: flex-end;
-  padding: 0;
+  align-items: flex-end;
+  padding-bottom: 72px;
 }
 
 .notation-panel {
   width: min(360px, 92vw);
   max-width: 100%;
-  height: 100%;
+  /* 固定高度（不跟着着法条数变）—— 和聊天弹层一个规矩 */
+  height: min(62vh, 520px);
+  max-height: min(62vh, 520px);
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
-  animation: notation-slide-in 0.18s ease-out;
-}
-
-@keyframes notation-slide-in {
-  from {
-    transform: translateX(24px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
 }
 
 .notation-head {
@@ -2390,6 +2469,19 @@ button {
 .notation-row .san.empty {
   color: var(--text-faint);
   font-weight: 400;
+}
+
+/*
+ * 自由练习：**当前所在的那一手**（棋谱游标所指）。
+ *
+ * 上一步/下一步会挪游标 —— 棋盘回到哪一手，棋谱里就得标出哪一手，
+ * 不然退回去之后不知道自己在看哪儿。
+ */
+.notation-row .san.current {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 1px 4px;
 }
 
 .notation-empty {
@@ -2442,18 +2534,6 @@ button {
 }
 
 /* ---------- 升变选择 ---------- */
-
-.overlay {
-  position: fixed;
-  inset: 0;
-  /* 亮色主题：遮罩别压太黑，否则弹窗之外的页面反而更暗 */
-  background: rgba(30, 42, 60, 0.42);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 300;
-  animation: fade-in 0.15s ease-out;
-}
 
 .promotion-box {
   background: var(--bg-panel);
@@ -3629,6 +3709,20 @@ button.status-dot:hover {
   gap: 2px;
 }
 
+/*
+ * 三十几课平铺一列，左列会长到把棋盘顶出屏幕 ——
+ * 宽屏（列表在棋盘旁边）时让列表**在内部滚**，棋盘和讲解留在视线里。
+ *
+ * 窄屏（<900px）是单列、棋盘在最上面，列表在下面 ——
+ * 那时再套一层内部滚动就是「套娃滚动」，反而难用，所以只在宽屏生效。
+ */
+@media (min-width: 900px) {
+  .lesson-list {
+    max-height: calc(100vh - 300px);
+    overflow-y: auto;
+  }
+}
+
 .lesson-row {
   display: flex;
   align-items: center;
@@ -3689,10 +3783,105 @@ button.status-dot:hover {
   white-space: nowrap;
 }
 
+/* ---------- 分类筛选 ---------- */
+
+/*
+ * 三十多课平铺一列太长，按「基本功 / 开局 / 应对 / 残局」分桶。
+ * 筛选按钮带课数，省得点了才发现那一类只有一课。
+ */
+.lesson-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-3);
+}
+
+.lesson-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 2px 9px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+
+.lesson-filter-chip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.lesson-filter-chip.active {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
+.lesson-filter-count {
+  color: var(--text-faint);
+}
+
+.lesson-filter-chip.active .lesson-filter-count {
+  color: #ffffff;
+  opacity: 0.85;
+}
+
+/*
+ * 侧别标记：白方 = 空心圈、黑方 = 实心圈（国际象棋通用约定）。
+ * 用图形而不是棋子 —— 白棋在纸色底上几乎看不见，而且图形缩到 13px 也不糊。
+ */
+.lesson-row-side {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
 /* ---------- 讲解面板 ---------- */
 
 .lesson-toggle {
   margin: var(--sp-2) 0 var(--sp-1);
+}
+
+/* ---------- 线路切换（应对课：对方有几种正经应手） ---------- */
+
+.lesson-lines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: var(--sp-3) 0 var(--sp-1);
+}
+
+.lesson-line-chip {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  padding: 5px 11px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.lesson-line-chip:hover {
+  color: var(--text);
+}
+
+.lesson-line-chip.active {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
 }
 
 .lesson-step {
@@ -3837,6 +4026,15 @@ button.status-dot:hover {
   flex: none;
   max-height: min(46vh, 360px);
   padding: 0;
+}
+
+/* 自由练习的「上一步 / 下一步」 */
+.practice-history {
+  margin-top: var(--sp-3);
+}
+
+.practice-history .btn {
+  flex: 1;
 }
 
 /* ---------- 大厅里的「教学练习」入口 ---------- */

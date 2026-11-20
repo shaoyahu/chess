@@ -53,10 +53,12 @@ import { DirectMessagePanel, type DmPeer } from '@/components/DirectMessagePanel
 import { ShareMenu } from '@/components/ShareMenu';
 import { describeResult, pieceAt } from '@/lib/chess-engine';
 import { formatClockMs } from '@/lib/clock';
+import { copyText } from '@/lib/clipboard';
 import { DEFAULT_VIEW_MODE, type ViewMode } from '@/lib/constants';
 import { getBoardTheme } from '@/lib/board-themes';
 import { playSound, resumeAudio } from '@/lib/sound';
 import { buildPgn, pairMoves } from '@/lib/pgn';
+import { isRuleEnd } from '@/lib/takeback';
 import type { Color, PieceType } from '@/lib/types';
 
 // 3D 依赖 three.js，按需加载，避免大厅首屏变慢
@@ -175,6 +177,33 @@ interface DanmakuItem {
   text: string;
   /** 轨道号：决定它落在屏幕上方第几行，避免互相压住 */
   lane: number;
+}
+
+/** 一行着法（回合号 + 白着 + 黑着） */
+interface NotationRowData {
+  no: number;
+  white?: string;
+  black?: string;
+}
+
+/**
+ * 棋谱的**着法列表** —— 记谱卡（宽屏）与底部弹层（窄屏）共用同一份内容。
+ *
+ * 两种形态只差外框，里面这一份必须一致：不然宽窄屏看到的棋谱会不一样。
+ */
+function NotationRows({ rows }: { rows: NotationRowData[] }) {
+  return (
+    <div className="notation-list">
+      {rows.length === 0 && <div className="notation-empty">还没有走子。</div>}
+      {rows.map((row) => (
+        <div className="notation-row" key={row.no}>
+          <span className="no">{row.no}.</span>
+          <span className={`san${row.white ? '' : ' empty'}`}>{row.white ?? ''}</span>
+          <span className={`san${row.black ? '' : ' empty'}`}>{row.black ?? ''}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function RoomPage() {
@@ -321,9 +350,18 @@ export default function RoomPage() {
    */
   const [leaveAsk, setLeaveAsk] = useState(false);
   /**
-   * 「棋谱」抽屉是否打开（窄屏下是弹层，宽屏也是弹层，样式与聊天一致）。
+   * 棋谱的两种形态 —— **都不是弹窗**（宽屏）。
+   *
+   * - **宽屏**：左栏**常驻一张记谱卡**（`.notation-card`），默认展开。
+   *   棋谱是「边下边看」的参照信息：做成弹窗就会压暗整页、盖住聊天、挡住棋盘，
+   *   恰恰在最想看它的时候最挡事（用户原话：「是不是就不适合做成弹窗」）。
+   * - **窄屏**：左栏变成顶部一整条，常驻卡会把棋盘挤没 → 走**底部弹层**，
+   *   跟聊天弹层同一套（点「♟ 棋谱」才弹出来）。
+   *
+   * 两个状态分开：宽屏默认展开（常驻），窄屏默认关闭（不点不开）。
    */
-  const [notationOpen, setNotationOpen] = useState(false);
+  const [notationCardOpen, setNotationCardOpen] = useState(true);
+  const [notationSheetOpen, setNotationSheetOpen] = useState(false);
   /**
    * 辅助下棋的推荐着法（蓝色指引箭头）。
    *
@@ -538,6 +576,16 @@ export default function RoomPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [chatOpen]);
 
+  // Esc 关掉棋谱浮层（窄屏那个；宽屏是常驻卡，没有浮层可关）
+  useEffect(() => {
+    if (!notationSheetOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setNotationSheetOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [notationSheetOpen]);
+
   const roomState = room?.state ?? null;
   const myColor = room?.color;
   const isSpectator = room?.role === 'spectator';
@@ -692,15 +740,42 @@ export default function RoomPage() {
   /**
    * 「悔棋」能不能点。
    *
-   * 规则（用户拍板）：**只撤销你自己走的那一步**，对方同意后轮到你重走。
-   * 所以只有「我刚走完那一步、对方还没回应」时才能悔；
-   * 对方一旦回应，这一步就锁死了（对方的着法是踩在我那步上算的）。
+   * 规则（用户 2026-11-20 拍板）：
+   *  - **我刚走完、对方还没回应** → 点下去**直接撤回**我那一步，不用问对方；
+   *  - **对方已经回应** → 点下去是**申请**，对方同意后撤那两步、轮到我重走；
+   *  - **我一步都没走过** → 没有可悔的，按钮置灰。
+   *
+   * 终局（自己那一步把对方将死了）**也能悔** ——
+   * 但只有「棋盘规则」判出来的终局才悔得动（认输/和棋/超时是人的决定，撤一步改不了）。
    */
   const lastMoveColor = roomState?.moves[roomState.moves.length - 1]?.color;
   const hasPendingOffer = Boolean(roomState?.drawOffer || roomState?.takebackOffer);
+  /** 我自己走过棋没有（没走过就没有可悔的） */
+  const iHaveMoved = Boolean(myColor && roomState?.moves.some((m) => m.color === myColor));
+  /** 对局是不是还在下（终局时只有「棋盘规则」判出来的才能悔） */
+  const endAllowsTakeback =
+    roomState?.status === 'playing' || isRuleEnd(roomState?.result?.reason);
   const canOfferTakeback = Boolean(
-    myColor && !isSpectator && !hasPendingOffer && lastMoveColor === myColor,
+    myColor && !isSpectator && !hasPendingOffer && iHaveMoved && lastMoveColor && endAllowsTakeback,
   );
+  /**
+   * 悔棋走哪条路：
+   *  - `direct` = 最后一步是我走的 → 直接撤回；
+   *  - `ask`   = 最后一步是对方走的 → 要对方点头。
+   */
+  const takebackMode: 'direct' | 'ask' | null = !canOfferTakeback
+    ? null
+    : lastMoveColor === myColor
+      ? 'direct'
+      : 'ask';
+  /** 悔棋按钮的说明（两种模式：直接撤 / 要对方点头） */
+  const takebackTitle = (() => {
+    if (takebackMode === 'direct') return '撤掉你刚走的那一步（直接撤回，轮到你重走）';
+    if (takebackMode === 'ask') return '请求对方同意，撤掉你上一步的棋';
+    if (hasPendingOffer) return '已有待回应的请求';
+    if (!iHaveMoved) return '你还没有走过棋';
+    return '对局已经结束，不能悔棋';
+  })();
 
   /**
    * 这是不是**人机局**。
@@ -766,6 +841,16 @@ export default function RoomPage() {
    */
   useEffect(() => {
     isNarrowRef.current = isNarrow;
+  }, [isNarrow]);
+
+  /*
+   * 变回宽屏 → 把窄屏的棋谱浮层收掉。
+   *
+   * 不收的话：窄屏开着浮层 → 拉宽成宽屏（浮层没了，状态还留着「开着」）
+   * → 再缩回窄屏，浮层**自己弹了出来** —— 没人点它，它却出现了。
+   */
+  useEffect(() => {
+    if (!isNarrow) setNotationSheetOpen(false);
   }, [isNarrow]);
 
   useEffect(() => {
@@ -984,11 +1069,17 @@ export default function RoomPage() {
       blackName: roomState.seats.b?.name ?? '黑方',
       result: roomState.result,
     });
-    try {
-      await navigator.clipboard.writeText(pgn);
+    /*
+     * 走 `copyText` 而不是直接 `navigator.clipboard.writeText` ——
+     * 局域网里跑的是 `http://192.168.x.x`，**不是安全上下文**，
+     * 那儿 `navigator.clipboard` 压根是 `undefined`，直接调必抛异常。
+     * `copyText` 自带「临时 textarea + execCommand」的兜底（http 下也能用）。
+     */
+    const ok = await copyText(pgn);
+    if (ok) {
       pushToast('success', 'PGN 已复制到剪贴板');
-    } catch {
-      pushToast('error', '复制失败，请检查浏览器权限');
+    } else {
+      pushToast('error', '复制失败，请手动选择棋谱文字复制');
     }
   }, [roomState, pushToast]);
 
@@ -1450,7 +1541,7 @@ export default function RoomPage() {
         prompts.push({
           id: 'takeback-waiting',
           title: '等待对方回应',
-          body: '已发出悔棋请求。对方同意后撤销你刚走的那一步、轮到你重走（棋钟不回退）；超时（30 秒）自动拒绝。',
+          body: '已发出悔棋请求。对方同意后撤销你上一步的棋（连同对方的应手一起撤掉）、轮到你重走（棋钟不回退）；超时（30 秒）自动拒绝。',
           deadline: takeback.deadline,
           now,
           actions: [{ label: '取消请求', onClick: () => send({ t: 'takeback.decline' }) }],
@@ -1459,7 +1550,7 @@ export default function RoomPage() {
         prompts.push({
           id: 'takeback-incoming',
           title: '对方请求悔棋',
-          body: '对方想撤销他自己刚走的那一步。同意后对方重走，棋钟不回退。',
+          body: '对方想悔掉他自己上一步的棋。同意后连同你这边的应手一起撤掉，轮到他重走（棋钟不回退）。',
           deadline: takeback.deadline,
           now,
           actions: [
@@ -1638,11 +1729,7 @@ export default function RoomPage() {
                           className="btn small"
                           onClick={() => send({ t: 'takeback.offer' })}
                           disabled={!canOfferTakeback}
-                          title={
-                            canOfferTakeback
-                              ? '悔掉你刚走的那一步（对方同意后轮到你重走）'
-                              : '只能悔自己刚走的那一步 —— 对方已经回应了就不能悔了'
-                          }
+                          title={takebackTitle}
                         >
                           <Undo2 size={15} aria-hidden="true" />
                           悔棋
@@ -1714,54 +1801,73 @@ export default function RoomPage() {
                       两边根本不是相邻的两步。只有「还原」能出沙盒，
                       出了沙盒这两个键才重新出现。
                 */}
-                {myColor && !isSpectator && roomState.status === 'finished' &&
-                  (replayActive ? (
-                    <>
+                {myColor && !isSpectator && roomState.status === 'finished' && (
+                  <>
+                    {/*
+                     * **终局也能悔棋**（2026-11-20 拍板）——
+                     * 自己那一步把对方将死/逼和了，照样能撤回那一步。
+                     *
+                     * 只有「棋盘规则」判出来的终局才悔得动
+                     * （认输/双方同意和棋/超时是**人的决定**，撤一步改不了它），
+                     * 这道判断在 `canOfferTakeback` 里。
+                     */}
+                    {canOfferTakeback && !isAiGame && (
                       <button
                         className="btn small"
-                        onClick={replay.reset}
-                        title={
-                          replayFree
-                            ? '回到自由走棋之前的棋盘'
-                            : '回到开局局面，重新看一遍'
-                        }
+                        onClick={() => send({ t: 'takeback.offer' })}
+                        title={takebackTitle}
                       >
-                        <RotateCcw size={15} aria-hidden="true" />
-                        还原
+                        <Undo2 size={15} aria-hidden="true" />
+                        悔棋
+                      </button>
+                    )}
+                    {replayActive ? (
+                      <>
+                      <button
+                      className="btn small"
+                      onClick={replay.reset}
+                      title={
+                      replayFree
+                      ? '回到自由走棋之前的棋盘'
+                      : '回到开局局面，重新看一遍'
+                      }
+                      >
+                      <RotateCcw size={15} aria-hidden="true" />
+                      还原
                       </button>
                       {!replayFree && (
-                        <>
-                          <button
-                            className="btn small"
-                            onClick={replay.prev}
-                            disabled={!replay.canPrev}
-                            title="上一步"
-                          >
-                            <ChevronLeft size={15} aria-hidden="true" />
-                            上一步
-                          </button>
-                          <button
-                            className="btn small"
-                            onClick={replay.next}
-                            disabled={!replay.canNext}
-                            title="下一步"
-                          >
-                            下一步
-                            <ChevronRight size={15} aria-hidden="true" />
-                          </button>
-                        </>
+                      <>
+                      <button
+                      className="btn small"
+                      onClick={replay.prev}
+                      disabled={!replay.canPrev}
+                      title="上一步"
+                      >
+                      <ChevronLeft size={15} aria-hidden="true" />
+                      上一步
+                      </button>
+                      <button
+                      className="btn small"
+                      onClick={replay.next}
+                      disabled={!replay.canNext}
+                      title="下一步"
+                      >
+                      下一步
+                      <ChevronRight size={15} aria-hidden="true" />
+                      </button>
+                      </>
                       )}
                       <button
-                        className="btn small ghost"
-                        onClick={replay.stop}
-                        title="退出复盘，回到终局局面"
+                      className="btn small ghost"
+                      onClick={replay.stop}
+                      title="退出复盘，回到终局局面"
                       >
-                        <X size={15} aria-hidden="true" />
-                        退出复盘
+                      <X size={15} aria-hidden="true" />
+                      退出复盘
                       </button>
-                    </>
+                      </>
                   ) : (
-                    <button
+                      <button
                       className="btn small"
                       onClick={replay.start}
                       title="按棋谱回放这盘棋（只有你自己看得到进度）"
@@ -1769,9 +1875,45 @@ export default function RoomPage() {
                       <History size={15} aria-hidden="true" />
                       复盘
                     </button>
-                  ))}
+                  )}
+                  </>
+                )}
               </div>
             </div>
+
+            {/*
+              **记谱卡**（宽屏）—— 棋谱常驻左栏，不是弹窗。
+
+              为什么不做成弹窗：
+                棋谱是「边下边看」的参照信息。做成弹窗就要压暗整页、盖住右边的
+                聊天、还会挡住棋盘 —— 恰恰在最想看棋谱的时候最挡事
+                （用户原话：「这个棋谱的弹窗的样式有点问题…是不是就不适合做成弹窗」）。
+
+              为什么它放左列：
+                左列本来就空着一大片（HUD 卡只占上面一截），
+                记谱纸摆在棋盘旁边也是线下的老位置。
+
+              窄屏不常驻：左栏变成顶部一整条，卡常驻会把棋盘挤没 →
+              窄屏走底部弹层（见页面下方 `.notation-overlay`）。
+            */}
+            {!isNarrow && notationCardOpen && (
+              <div className="notation-card">
+                <div className="notation-head">
+                  <span>棋谱</span>
+                </div>
+                <NotationRows rows={notation} />
+                <div className="notation-foot">
+                  <button
+                    className="btn small primary"
+                    style={{ flex: 1 }}
+                    onClick={copyPgn}
+                    disabled={roomState.moves.length === 0}
+                  >
+                    复制 PGN
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 中列：棋盘 */}
@@ -1959,10 +2101,15 @@ export default function RoomPage() {
                 ))}
               </div>
               <button
-                className={`rail-notation-btn${notationOpen ? ' open' : ''}`}
-                onClick={() => setNotationOpen((v) => !v)}
-                title="棋谱（点击展开/收起）"
-                aria-expanded={notationOpen}
+                className={`rail-notation-btn${(isNarrow ? notationSheetOpen : notationCardOpen) ? ' open' : ''}`}
+                onClick={() => {
+                  // 宽屏：收起/展开左栏的记谱卡（不弹任何东西）
+                  // 窄屏：左栏放不下常驻卡 → 弹底部浮层（跟「聊天」一个规矩）
+                  if (isNarrow) setNotationSheetOpen(true);
+                  else setNotationCardOpen((v) => !v);
+                }}
+                title={isNarrow ? '棋谱（点这里展开棋谱）' : '棋谱（点击收起/展开记谱卡）'}
+                aria-expanded={isNarrow ? notationSheetOpen : notationCardOpen}
               >
                 <span aria-hidden="true">
                   <BookOpen size={15} />
@@ -2030,30 +2177,22 @@ export default function RoomPage() {
           </div>
         )}
         {/*
-          棋谱抽屉（点「♟ 棋谱」按钮从右侧滑出）。
-          样式与聊天弹层同一套 —— 同样的头 / 边框 / 阴影，底部是「复制 PGN」。
+          棋谱（**窄屏专用**）—— 底部浮层，跟聊天弹层同一套。
+
+          宽屏不需要它：宽屏棋谱是左栏常驻的记谱卡（`.notation-card`），
+          不压棋盘、不遮聊天。窄屏左栏是顶部一整条，常驻卡会把棋盘挤没，
+          所以窄屏才退回到浮层 —— 这跟聊天弹层是同一个理由。
         */}
-        {notationOpen && (
-          <div className="overlay notation-overlay" onClick={() => setNotationOpen(false)}>
+        {isNarrow && notationSheetOpen && (
+          <div className="overlay notation-overlay" onClick={() => setNotationSheetOpen(false)}>
             <div className="notation-panel" onClick={(e) => e.stopPropagation()}>
               <div className="notation-head">
                 <span>棋谱</span>
-                <button className="btn small ghost" onClick={() => setNotationOpen(false)}>
+                <button className="btn small ghost" onClick={() => setNotationSheetOpen(false)}>
                   收起
                 </button>
               </div>
-              <div className="notation-list">
-                {notation.length === 0 && (
-                  <div className="notation-empty">还没有走子。</div>
-                )}
-                {notation.map((p) => (
-                  <div className="notation-row" key={p.no}>
-                    <span className="no">{p.no}.</span>
-                    <span className={`san${p.white ? '' : ' empty'}`}>{p.white ?? ''}</span>
-                    <span className={`san${p.black ? '' : ' empty'}`}>{p.black ?? ''}</span>
-                  </div>
-                ))}
-              </div>
+              <NotationRows rows={notation} />
               <div className="notation-foot">
                 <button
                   className="btn small primary"

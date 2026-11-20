@@ -31,6 +31,7 @@
     "verify:drag": "tsx scripts/verify-drag.ts",
     "verify:replay": "tsx scripts/verify-replay.ts",
     "verify:practice": "tsx scripts/verify-practice.ts",
+    "verify:lessons": "tsx scripts/verify-lesson-text.ts",
     "verify:color-draw": "tsx scripts/verify-color-draw.ts",
     "verify:engine": "tsx scripts/verify-engine-tactics.ts",
     "verify:stockfish": "tsx scripts/verify-stockfish.ts",
@@ -47,6 +48,8 @@
     "mutate:invite": "tsx scripts/mutate-invite.ts",
     "mutate:drag": "tsx scripts/mutate-drag.ts",
     "mutate:replay": "tsx scripts/mutate-replay.ts",
+    "mutate:lessons": "tsx scripts/mutate-lesson-text.ts",
+    "mutate:practice": "tsx scripts/mutate-practice.ts",
     "mutate:color-draw": "tsx scripts/mutate-color-draw.ts",
     "mutate:engine": "tsx scripts/mutate-engine-tactics.ts",
     "mutate:stockfish": "tsx scripts/mutate-stockfish.ts"

@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gateTurnedRed } from './lib/gate-match';
 
 /*
  * 参数解析：**URL 和过滤词都不能靠「位置」猜**（详见 mutate-move-arrow.ts 的同段注释）。
@@ -140,27 +141,37 @@ const MUTATIONS: Mutation[] = [
     expect: 'U6',
   },
   {
-    name: '【七】棋谱抽屉打不开（按钮点了没反应）',
+    /*
+     * 【七】棋谱按钮点了没反应。
+     *
+     * 宽屏下棋谱是**左栏常驻的记谱卡**，按钮只管「收起 / 展开」。
+     * 按钮失灵 → 卡收不起来 → U19 的「收起后卡真的没了」判据变红。
+     */
+    name: '【七】棋谱按钮点了没反应（记谱卡收不起来）',
     file: 'src/app/room/[code]/page.tsx',
-    from: 'onClick={() => setNotationOpen((v) => !v)}',
-    to: 'onClick={() => { /* 变异：点了没反应 */ }}',
-    expect: 'U7',
+    from: `                  if (isNarrow) setNotationSheetOpen(true);
+                  else setNotationCardOpen((v) => !v);`,
+    to: `                  void 0; // 变异：点了没反应`,
+    expect: 'U19',
   },
   {
-    name: '【八】棋谱抽屉样式跟聊天不一样',
+    name: '【八】窄屏棋谱浮层样式跟聊天不一样',
     file: 'src/app/globals.css',
-    // globals.css 本轮重写，.notation-panel 多了 max-width / border-left → 目标串跟着更新。
     from: `.notation-panel {
   width: min(360px, 92vw);
   max-width: 100%;
-  height: 100%;
+  /* 固定高度（不跟着着法条数变）—— 和聊天弹层一个规矩 */
+  height: min(62vh, 520px);
+  max-height: min(62vh, 520px);
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);`,
     to: `.notation-panel {
   width: min(360px, 92vw);
   max-width: 100%;
-  height: 100%;
+  /* 固定高度（不跟着着法条数变）—— 和聊天弹层一个规矩 */
+  height: min(62vh, 520px);
+  max-height: min(62vh, 520px);
   display: flex;
   flex-direction: column;
   background: #eeeeee;`,
@@ -217,22 +228,35 @@ const MUTATIONS: Mutation[] = [
     expect: 'U11',
   },
   {
+    /*
+     * 【十三】服务端进房失败不再回错误消息（只回 toast）。
+     *
+     * 目标串跟着代码更新过：进房失败现在走 `rejectJoin()`，
+     * 里面先发一条 toast、再发一条 error —— 去掉后者，
+     * 页面就永远停在「正在进入房间…」（拿不到原因，也没有出口）。
+     */
     name: '【十三】服务端进房失败不再回错误消息（只回 toast）',
     file: 'src/server/ws-hub.ts',
-    from: "      this.send(client, { t: 'error', message: result.message });",
-    to: "      // 变异：不再回错误消息",
+    from: "    this.send(client, { t: 'error', message, code });",
+    to: "    // 变异：不再回错误消息",
     expect: 'U13',
   },
   {
+    /*
+     * 【十四】客户端不处理进房失败（页面永远停在「正在进入房间…」）。
+     *
+     * 这段处理**搬过家**：原来在对局页的 subscribe 回调里，
+     * 现在在 socket 层（`useSocket`）—— 原因要跨页面活着（从私信卡片点进来时
+     * 请求是大厅页发的，对局页是之后才挂上的），所以放全局状态。
+     *
+     * 改的是「**记不记**这条原因」，不是 `case 'error':` 那个标签 ——
+     * 改标签会让 TS 的联合类型收窄失效（`msg.message` 就不是那个类型了），
+     * **构建直接失败**，那条变异就变成了「什么都没测到」。
+     */
     name: '【十四】客户端不处理进房失败（页面永远停在「正在进入房间…」）',
-    file: 'src/app/room/[code]/page.tsx',
-    from: `        } else if (msg.t === 'error') {
-          // 服务端拒绝了进入房间的请求 → 把「正在进入房间…」换成错误卡片
-          setJoinError(msg.message);
-        } else if (msg.t === 'room') {`,
-    to: `        } else if (msg.t === 'error') {
-          // 变异：不处理错误消息
-        } else if (msg.t === 'room') {`,
+    file: 'src/hooks/useSocket.ts',
+    from: `          this.setState({ joinError: { message: msg.message, code: msg.code } });`,
+    to: `          // 变异：不记录进房失败的原因`,
     expect: 'U13',
   },
   {
@@ -339,6 +363,73 @@ const MUTATIONS: Mutation[] = [
     from: '          <g clipPath={`url(#${clipId})`}>',
     to: '          <g>',
     expect: 'U18',
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* 本轮：棋谱从弹窗改成左栏常驻卡 + 局域网 http 下的复制兜底          */
+  /* ------------------------------------------------------------------ */
+  {
+    /*
+     * 【二十一】棋谱又变回弹窗 —— 记谱卡直接铺满整个视口。
+     *
+     * 复现的是用户拍板否掉的那个形态：棋谱盖在棋盘上（还压暗整页）。
+     * 判据 U19 守的是「常驻左栏 + 不与棋盘相交 + 没有遮罩」。
+     */
+    name: '【二十一】棋谱又变回弹窗（记谱卡铺满视口、盖住棋盘）',
+    file: 'src/app/globals.css',
+    from: `.notation-card {
+  display: flex;
+  flex-direction: column;`,
+    to: `.notation-card {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;`,
+    expect: 'U19',
+  },
+  {
+    /*
+     * 【二十二】复制不再走兜底 —— 又直接调 navigator.clipboard。
+     *
+     * 这正是用户报的故障：局域网里跑的是 `http://192.168.x.x`，
+     * **不是安全上下文**，那儿 `navigator.clipboard` 压根是 `undefined`，
+     * 直接调必抛异常 → 「复制失败，请检查浏览器权限」。
+     * 判据 U20 把那个环境复现出来（抹掉 navigator.clipboard），
+     * 这条变异必须让 U20 变红。
+     */
+    name: '【二十二】复制 PGN 不走兜底（直接调 navigator.clipboard）',
+    file: 'src/app/room/[code]/page.tsx',
+    from: '    const ok = await copyText(pgn);',
+    to: '    const ok = await navigator.clipboard.writeText(pgn).then(() => true, () => false);',
+    expect: 'U20',
+  },
+  {
+    /*
+     * 【二十三】遮罩基座又被挪到变体后面 —— 「贴底」的浮层变回垂直居中。
+     *
+     * 同权重时**后写的赢**：基座 `.overlay` 的 `align-items: center`
+     * 一旦写在 `.chat-overlay` / `.notation-overlay` 后面，
+     * 变体的 `align-items: flex-end` 就被盖掉。
+     * 判据 U8 的「浮层贴屏幕底部」守这条。
+     */
+    name: '【二十三】遮罩基座挪到变体后面（浮层不再贴底、变成垂直居中）',
+    file: 'src/app/globals.css',
+    from: `/* ---- 窄屏：底部弹层 ---- */
+.notation-overlay {
+  align-items: flex-end;
+  padding-bottom: 72px;
+}`,
+    to: `/* ---- 窄屏：底部弹层 ---- */
+.notation-overlay {
+  align-items: flex-end;
+  padding-bottom: 72px;
+}
+
+/* 变异：遮罩基座被挪到变体后面 → align-items: center 把「贴底」盖掉 */
+.overlay {
+  align-items: center;
+}`,
+    expect: 'U8',
   },
 ];
 
@@ -492,7 +583,14 @@ for (const m of RUN) {
       continue;
     }
     const r = sh('npx', ['tsx', 'scripts/verify-settings-ui.ts', APP_URL]);
-    const gateRed = r.out.split('\n').some((l) => l.includes('❌') && l.includes(m.expect));
+    /*
+     * 「这条门禁红了没」由 `scripts/lib/gate-match.ts` 判（那里有单测锁着规则）。
+     *
+     * 判定规则踩过两次坑，别再改松了：
+     *   · 纯 `includes` → 「期望 U2」被「❌ U20 …」冒充成抓到（假绿）；
+     *   · 纯词边界 `\bU9\b` → 「❌ U9b …」认不出来（假阴性）。
+     */
+    const gateRed = gateTurnedRed(r.out, m.expect);
     const nonzero = r.code !== 0;
     if (gateRed && nonzero) {
       caught += 1;

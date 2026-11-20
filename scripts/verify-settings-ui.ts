@@ -5,16 +5,20 @@
  *   这一批功能都是**产品面**的（用户拍板新增），和「走子箭头看得见」是不同主题；
  *   混在一起会让任何一个脚本的失败都很难定位。
  *
- * 门禁清单（19 条判据，U1~U18）：
+ * 门禁清单（21 条判据，U1~U20）：
  *   U1  顶栏有齿轮按钮，点开就是设置弹窗。
  *   U2  设置弹窗内容齐全：音效开关 / 音量 / 5 套配色 / 辅助下棋 / 翻转棋盘。
  *   U3  音效**默认关**（用户拍板）—— 开关未勾选，且 localStorage 里不是 true。
  *   U4  棋盘格子是**纯色**（用户说「看着不像纯色」）—— background-image 必须是 none。
  *   U5  换配色**真的生效** —— 切「蓝白」后深格背景色变成 #4d7fbe，且已落盘。
  *   U6  「♟ 棋谱」按钮在**快捷聊天右边**、且同一行（用户拍板的位置）。
- *   U7  棋谱抽屉能打开、步数与对局一致、列出了真实 SAN、底部有「复制 PGN」，
- *       点一下真的把 PGN 写进剪贴板。
- *   U8  棋谱抽屉与聊天弹层**同一套样式**（用户拍板「和聊天是同一个样式的」）。
+ *   U7  宽屏左栏的**棋谱记谱卡**内容正确（步数与对局一致、列出真实 SAN、
+ *       底部有「复制 PGN」），点一下真的把 PGN 写进剪贴板。
+ *   U8  窄屏棋谱浮层与聊天弹层**同一套样式**，且两个浮层都**贴屏幕底部**。
+ *   U19 宽屏棋谱**不是弹窗**：常驻左栏、没有遮罩、不与棋盘相交，
+ *       收起/展开都不动棋盘（用户拍板「是不是就不适合做成弹窗」）。
+ *   U20 **没有 navigator.clipboard 时复制照样成功**（局域网 http 场景）——
+ *       走「临时 textarea + execCommand」兜底，且剪贴板里**读回来**确实是这份 PGN。
  *   U9  辅助下棋开着 → HUD 里出现「提示」按钮，**点它**才出现**蓝色**指引箭头
  *       （开着的时候**不许**自动显示 —— 判据看的是「有没有发过 hint.request」）。
  *   U10 辅助下棋关掉 → 指引箭头和「提示」按钮一起消失。
@@ -351,6 +355,17 @@ async function main(): Promise<void> {
 
     await cdp.send('Page.enable');
     await cdp.send('Runtime.enable');
+    /*
+     * **强制页面处于「有焦点」状态**。
+     *
+     * 不开这个的话，headless 里的页面没有焦点：
+     *   · `document.execCommand('copy')` 直接返回 false（复制不成立）；
+     *   · `navigator.clipboard.readText()` 抛「Document is not focused」。
+     * 两者都是**环境问题**，不是产品代码的问题 ——
+     * 但没有它们，门禁就验不了「局域网 http 下没有 navigator.clipboard 时，
+     * 复制照样成功」这条（U20）。
+     */
+    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
 
     /*
      * 抓一手 WebSocket 报文（**只在门禁脚本里注入**，不改产品代码）。
@@ -1258,9 +1273,12 @@ async function main(): Promise<void> {
       );
     });
 
-    await step('U7', '棋谱抽屉内容正确 + 复制 PGN', async () => {
-      await clickSelector('.rail-notation-btn', '棋谱按钮');
-      await waitForExpr(`!!document.querySelector('.notation-panel')`, '棋谱抽屉打开', 8000);
+    await step('U7', '棋谱记谱卡内容正确 + 复制 PGN', async () => {
+      /*
+       * 宽屏下棋谱是**左栏常驻的记谱卡**（`.notation-card`），默认就展开 ——
+       * 所以这里**不能**去点「♟ 棋谱」按钮（那个按钮现在是「收起」）。
+       */
+      await waitForExpr(`!!document.querySelector('.notation-card')`, '左栏记谱卡出现', 8000);
       const notation = await evaluate<{
         rows: number;
         text: string;
@@ -1269,7 +1287,7 @@ async function main(): Promise<void> {
         pgnDisabled: boolean;
       }>(`
         (() => {
-          const p = document.querySelector('.notation-panel');
+          const p = document.querySelector('.notation-card');
           if (!p) return { rows: 0, text: '', badge: '', pgnBtn: false, pgnDisabled: false };
           const rows = p.querySelectorAll('.notation-row').length;
           const badge = document.querySelector('.notation-count');
@@ -1292,48 +1310,210 @@ async function main(): Promise<void> {
           notation.text.includes('e5') &&
           notation.pgnBtn &&
           !notation.pgnDisabled,
-        'U7 棋谱抽屉内容正确（步数 / 回合行 / 真实 SAN / 复制 PGN）',
+        'U7 棋谱记谱卡内容正确（步数 / 回合行 / 真实 SAN / 复制 PGN）',
         `着法数=${badgeNum}，回合行=${notation.rows}（应 ${expectRows}），含 e5=${notation.text.includes('e5')}，复制按钮=${notation.pgnBtn}`,
       );
       await shot('u7-notation');
 
-      // 点「复制 PGN」→ 真的写进剪贴板
-      await evaluate(`
-        (() => {
-          window.__pgn = null;
-          const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
-          navigator.clipboard.writeText = async (text) => {
-            window.__pgn = text;
-            try { await orig(text); } catch { /* headless 里可能没权限，不影响判定 */ }
-          };
-          return true;
-        })()
-      `);
-      await clickText('.notation-panel button', '复制 PGN', '复制 PGN');
+      // 点「复制 PGN」→ **真的写进剪贴板**，再**读回来核对**
+      /*
+       * 为什么不用「拦一刀 writeText」的写法：
+       *   那样只能证明「我们把什么交给了浏览器」，证不了「浏览器真复制了」。
+       *   剪贴板读回来才是真的（复制错了内容，提示照样会弹「已复制」）。
+       */
+      await cdp!.send(
+        'Browser.grantPermissions',
+        {
+          origin: new URL(APP_URL).origin,
+          permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        },
+        '',
+      );
+      await clickText('.notation-card button', '复制 PGN', '复制 PGN');
       await sleep(800);
-      const pgn = await evaluate<string>(`window.__pgn || ''`);
+      const clip = await evaluate<string>(
+        `(async () => {
+          try { return await navigator.clipboard.readText(); }
+          catch (e) { return 'CLIPBOARD_ERROR:' + (e && e.message ? e.message : String(e)); }
+        })()`,
+        true,
+      );
       verdict(
-        pgn.includes('e5') && pgn.includes('[Event "') && pgn.includes('1.'),
-        'U7 复制 PGN 真的写出了标准 PGN',
-        `PGN 长度=${pgn.length}，前 80 字：${pgn.slice(0, 80).replace(/\n/g, '⏎')}`,
+        clip.includes('[Event "') && clip.includes('1.') && clip.includes('e5'),
+        'U7 复制 PGN 真的写进了剪贴板（读回核对）',
+        `读回长度=${clip.length}，前 80 字：${clip.slice(0, 80).replace(/\n/g, '⏎')}`,
       );
     });
 
     /* ================================================================ */
-    /* U8：棋谱抽屉与聊天弹层同一套样式                               */
+    /* U19：宽屏棋谱是左栏常驻卡，**不是弹窗**                          */
     /* ================================================================ */
-    // 先把宽屏下打开的棋谱抽屉关掉（否则下面那次点击会把它**收起**）
-    await evaluate(`
-      (() => {
-        const btn = [...document.querySelectorAll('.notation-panel button')]
-          .find((b) => (b.textContent || '').includes('收起'));
-        if (btn) btn.click();
-        return true;
-      })()
-    `);
-    await sleep(400);
+    await step('U19', '宽屏棋谱不弹窗：常驻左栏、不遮棋盘', async () => {
+      /*
+       * 用户明确拍板：「这个棋谱的弹窗的样式有点问题…是不是就不适合做成弹窗」。
+       * 这条守的就是那句话，判据有四根（缺一根都可能假绿）：
+       *   ① DOM 里**没有** .overlay / .notation-overlay —— 没有压暗整页的遮罩；
+       *   ② 记谱卡在**左列**（.col-hud 内），且**与棋盘不相交**；
+       *   ③ 棋盘矩形在「展开 → 收起 → 再展开」前后**一模一样**（不顶不动）；
+       *   ④ 收起后卡真的没了，展开后真的回来了（按钮仍然管用）。
+       */
+      const geo = await evaluate<{
+        hasOverlay: boolean;
+        inLeftCol: boolean;
+        card: Box | null;
+        board: Box | null;
+        overlap: boolean;
+      }>(`
+        (() => {
+          const card = document.querySelector('.notation-card');
+          const board = document.querySelector('.board-frame');
+          const rect = (el) => {
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { x: r.left, y: r.top, w: r.width, h: r.height };
+          };
+          const c = rect(card), b = rect(board);
+          return {
+            hasOverlay: !!document.querySelector('.overlay, .notation-overlay'),
+            inLeftCol: !!(card && card.closest('.col-hud')),
+            card: c,
+            board: b,
+            overlap: !!(c && b && c.x < b.x + b.w && c.x + c.w > b.x && c.y < b.y + b.h && c.y + c.h > b.y),
+          };
+        })()
+      `);
+      verdict(
+        !geo.hasOverlay && geo.inLeftCol && !geo.overlap && geo.card !== null && geo.board !== null,
+        'U19 宽屏棋谱常驻左栏、没有遮罩、也不压棋盘',
+        `遮罩=${geo.hasOverlay}，在左列=${geo.inLeftCol}，与棋盘相交=${geo.overlap}，记谱卡=${JSON.stringify(geo.card)}`,
+      );
 
-    await step('U8', '棋谱抽屉与聊天弹层同一套样式', async () => {
+      // 收起 → 棋盘不许动 → 再展开
+      await clickSelector('.rail-notation-btn', '棋谱按钮（收起）');
+      await waitForExpr(`!document.querySelector('.notation-card')`, '记谱卡收起', 8000);
+      const after = await evaluate<Box | null>(`
+        (() => {
+          const el = document.querySelector('.board-frame');
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { x: r.left, y: r.top, w: r.width, h: r.height };
+        })()
+      `);
+      const same =
+        after !== null &&
+        geo.board !== null &&
+        Math.abs(after.x - geo.board.x) <= 1 &&
+        Math.abs(after.y - geo.board.y) <= 1 &&
+        Math.abs(after.w - geo.board.w) <= 1 &&
+        Math.abs(after.h - geo.board.h) <= 1;
+      verdict(same, 'U19 收起记谱卡，棋盘一动不动', `收起前=${JSON.stringify(geo.board)}，收起后=${JSON.stringify(after)}`);
+
+      await clickSelector('.rail-notation-btn', '棋谱按钮（展开）');
+      await waitForExpr(`!!document.querySelector('.notation-card')`, '记谱卡重新展开', 8000);
+      await shot('u19-notation-card');
+    });
+
+    /* ================================================================ */
+    /* U20：没有 navigator.clipboard 时复制照样成功                      */
+    /* ================================================================ */
+    await step('U20', '没有 navigator.clipboard 时复制照样成功（局域网 http）', async () => {
+      /*
+       * 用户报的故障：点「复制 PGN」弹出「复制失败，请检查浏览器权限」。
+       *
+       * 根因：局域网里跑的是 `http://192.168.x.x`，**不是安全上下文**，
+       * 那儿 `navigator.clipboard` 压根是 `undefined` —— 直接调它必抛异常。
+       * 修法是走 `copyText()`（自带「临时 textarea + execCommand」兜底）。
+       *
+       * 这条判据把那个环境**复现出来**：
+       *   ① 把 navigator.clipboard 抹成 undefined（模拟 http 页面）；
+       *   ② 点「复制 PGN」→ 必须走兜底那条路，且交给复制命令的**就是这份 PGN**；
+       *   ③ 兜底成功时，界面必须弹**成功**提示（不能再是「复制失败」）。
+       *
+       * ⚠️ 关于「系统剪贴板里到底有没有东西」：
+       *   headless Chromium **不支持** `document.execCommand('copy')` ——
+       *   实测五种写法（只读 / 可编辑 / 透明 / 可见 / Range 选区）**全部返回 false**，
+       *   连 `queryCommandSupported('copy')` 都是 true 却照样失败。
+       *   所以这里把 execCommand 换成「记录内容并返回 true」的桩：
+       *   它验的是**接线**（走没走兜底、复制的是不是这份 PGN、成功时界面怎么表现），
+       *   不是浏览器真往系统剪贴板里写东西。
+       *   兜底函数本身的契约（什么情况返回 true / false）由 `tests/clipboard.test.ts` 守住；
+       *   现代 API 那条路的**真·读回核对**在 U7 里做（headless 下它是真的能用）。
+       */
+      await cdp!.send(
+        'Browser.grantPermissions',
+        {
+          origin: new URL(APP_URL).origin,
+          permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        },
+        '',
+      );
+      // 关掉上一条判据留下的 toast —— 走**按钮**（React 自己的关闭逻辑）。
+      // 不能直接 remove DOM 节点：那会把节点从 React 手里抽走，
+      // 下一次渲染 React 就会报错，**整页崩掉**（后面几条门禁会跟着假红）。
+      await evaluate(`(() => {
+        document.querySelectorAll('.toast-close').forEach((b) => b.click());
+        return true;
+      })()`);
+      await sleep(500);
+      await evaluate(`
+        (() => {
+          window.__origClipboard = navigator.clipboard;
+          // 模拟局域网：http 页面不是安全上下文 → navigator.clipboard 不存在
+          Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+          // 兜底那条路：把 execCommand 记下来，看它到底复制了什么
+          window.__execText = null;
+          window.__execCalls = 0;
+          document.execCommand = (cmd) => {
+            if (String(cmd).toLowerCase() === 'copy') {
+              window.__execCalls += 1;
+              const el = document.activeElement;
+              window.__execText = el && 'value' in el ? String(el.value) : '';
+            }
+            // headless 复制不了 → 这里当作「复制成功」返回
+            return true;
+          };
+          return true;
+        })()
+      `);
+      await clickText('.notation-card button', '复制 PGN', '复制 PGN（无 navigator.clipboard）');
+      await sleep(900);
+      const r = await evaluate<{
+        exec: string;
+        calls: number;
+        texts: string[];
+        toastOk: boolean;
+        toastErr: boolean;
+      }>(`
+        (() => {
+          const texts = [...document.querySelectorAll('.toast-text')].map((t) => t.textContent || '');
+          return {
+            exec: window.__execText || '',
+            calls: window.__execCalls || 0,
+            texts,
+            toastOk: texts.includes('PGN 已复制到剪贴板'),
+            toastErr: texts.some((t) => t.includes('复制失败')),
+          };
+        })()
+      `);
+      const execOk =
+        r.calls >= 1 && r.exec.includes('[Event "') && r.exec.includes('1.') && r.exec.includes('e5');
+      verdict(
+        execOk && r.toastOk && !r.toastErr,
+        'U20 没有 navigator.clipboard 时复制走兜底、并且成功',
+        `兜底被调用=${r.calls} 次，复制内容是标准 PGN=${execOk}（长度 ${r.exec.length}），成功提示=${r.toastOk}，错误提示=${r.toastErr}，提示原文=${JSON.stringify(r.texts)}`,
+      );
+
+      // 把 navigator.clipboard 还原回去，别影响后面的判据
+      await evaluate(`(() => {
+        Object.defineProperty(navigator, 'clipboard', { value: window.__origClipboard, configurable: true });
+        return true;
+      })()`);
+    });
+
+    /* ================================================================ */
+    /* U8：窄屏棋谱浮层与聊天弹层同一套样式                            */
+    /* ================================================================ */
+    await step('U8', '窄屏棋谱浮层与聊天弹层同一套样式', async () => {
       await cdp!.send('Emulation.setDeviceMetricsOverride', {
         width: 430,
         height: 900,
@@ -1341,32 +1521,35 @@ async function main(): Promise<void> {
         mobile: false,
       });
       await sleep(900);
-      const narrowOk = await evaluate<boolean>(`!!document.querySelector('.layout-narrow')`);
-      if (!narrowOk) throw new Error('没能切到窄屏布局，无法对比');
+      // 等布局**真的**切过来（宽度变了 → resize → 重新量）
+      await waitForExpr(`!!document.querySelector('.layout-narrow')`, '切到窄屏布局', 8000);
       // 打开聊天弹层
       await clickSelector('.rail-chat', '聊天按钮');
       await waitForExpr(`!!document.querySelector('.chat-panel')`, '聊天弹层打开', 8000);
-      // 打开棋谱抽屉
+      // 打开棋谱浮层（窄屏下棋谱走底部浮层）
       await clickSelector('.rail-notation-btn', '棋谱按钮（窄屏）');
-      await waitForExpr(`!!document.querySelector('.notation-panel')`, '棋谱抽屉打开（窄屏）', 8000);
+      await waitForExpr(`!!document.querySelector('.notation-panel')`, '棋谱浮层打开（窄屏）', 8000);
       const styleCmp = await evaluate<{
         bg: [string, string];
         shadow: [string, string];
         headFont: [string, string];
         headPad: [string, string];
+        bottomGap: [number, number];
       }>(`
         (() => {
           const c = document.querySelector('.chat-panel');
           const n = document.querySelector('.notation-panel');
-          if (!c || !n) return { bg: ['',''], shadow: ['',''], headFont: ['',''], headPad: ['',''] };
+          if (!c || !n) return { bg: ['',''], shadow: ['',''], headFont: ['',''], headPad: ['',''], bottomGap: [-1,-1] };
           const ch = document.querySelector('.chat-panel-head');
           const nh = document.querySelector('.notation-head');
           const ccs = getComputedStyle(c), ncs = getComputedStyle(n);
+          const gap = (el) => Math.round(window.innerHeight - el.getBoundingClientRect().bottom);
           return {
             bg: [ccs.backgroundColor, ncs.backgroundColor],
             shadow: [ccs.boxShadow, ncs.boxShadow],
             headFont: [ch ? getComputedStyle(ch).fontSize : '', nh ? getComputedStyle(nh).fontSize : ''],
             headPad: [ch ? getComputedStyle(ch).padding : '', nh ? getComputedStyle(nh).padding : ''],
+            bottomGap: [gap(c), gap(n)],
           };
         })()
       `);
@@ -1377,8 +1560,27 @@ async function main(): Promise<void> {
         styleCmp.headPad[0] === styleCmp.headPad[1];
       verdict(
         same,
-        'U8 棋谱抽屉与聊天弹层同一套样式',
+        'U8 窄屏棋谱浮层与聊天弹层同一套样式',
         `背景=${JSON.stringify(styleCmp.bg)} 阴影一致=${styleCmp.shadow[0] === styleCmp.shadow[1]} 头部字号=${JSON.stringify(styleCmp.headFont)} 头部内距=${JSON.stringify(styleCmp.headPad)}`,
+      );
+      /*
+       * 两个浮层都要**贴在屏幕底部**。
+       *
+       * 这条守的是一个真实的 CSS 顺序坑：
+       *   `.overlay` 基座（`align-items: center`）写在 `.chat-overlay` / `.notation-overlay`
+       *   **后面** → 同权重后写的赢 → 变体的 `align-items: flex-end` 被盖掉，
+       *   「贴底」的浮层一律停在**垂直居中**（聊天弹层一直是这样）。
+       * 基座挪到变体前面之后，这条判据才开始有意义。
+       */
+      const bottomOk =
+        styleCmp.bottomGap[0] > 20 &&
+        styleCmp.bottomGap[0] < 160 &&
+        styleCmp.bottomGap[1] > 20 &&
+        styleCmp.bottomGap[1] < 160;
+      verdict(
+        bottomOk,
+        'U8 窄屏浮层贴屏幕底部（不是垂直居中）',
+        `距底边：聊天=${styleCmp.bottomGap[0]}px，棋谱=${styleCmp.bottomGap[1]}px（应 20~160）`,
       );
       await shot('u8-narrow');
       await cdp!.send('Emulation.clearDeviceMetricsOverride');
