@@ -63,6 +63,37 @@ cd /opt/lan-chess
 >
 > 真要在服务器上构建，先 `free -m` 看余量，**并确认没有别的服务在跑**。
 
+### 2.1 「在别处装依赖再传上来」的坑：**原生二进制是平台相关的**
+
+2026-11-23 实测踩到：在 Mac 上 `npm ci --omit=dev` 再把 `node_modules` 传到 Linux 服务器，
+**服务起不来** —— esbuild 的二进制是按平台分的。
+
+```
+esbuild/lib/main.js: generateBinPath ...
+  → 找不到可执行的二进制
+```
+
+原因：`node_modules/@esbuild/` 下面是**按平台命名**的目录，
+macOS 上装出来的是 `@esbuild/darwin-arm64`，Linux 服务器要的是 `@esbuild/linux-x64`。
+`npm rebuild esbuild` **不会**换平台包（它只重跑安装脚本，平台包还在原地）。
+
+修法（在服务器上执行）：
+
+```bash
+cd /opt/lan-chess
+# 版本号要对上：node -p "require('./node_modules/esbuild/package.json').version"
+sudo -u lan-chess npm install --no-save --no-package-lock @esbuild/linux-x64@<版本>
+rm -rf node_modules/@esbuild/darwin-arm64   # 留着也没用，还占地方
+```
+
+**要留心的包**：凡是带 `@<平台>-<架构>` 目录的都属于这一类（esbuild、@next/swc-* 等）。
+**只跑 WS 的服务**只需要 esbuild 这一个；`@next/swc-*` 跟它无关。
+
+> 传输时 macOS 的 xattr 会让 tar 刷一堆
+> `Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'`
+> —— **无害**，忽略即可。
+
+
 ```bash
 cd /opt/lan-chess
 npm ci                 # 按 lockfile 精确安装
@@ -607,5 +638,108 @@ journalctl -u lan-chess-ws -n 50 --no-pager
    建议装**原生** Stockfish（同哈希更省内存），并把引擎实例数压到 1
    （`engine-pool.ts` 按核数推算：2 核机器本来就只开 1 个）。
 4. **零鉴权**：公网开放前至少加 nginx 的 Origin 白名单（§17.1 末尾）。
+
+### 17.7 实际部署记录（2026-11-23，已上线）
+
+> ⚠️ **脱敏说明**：本节的真实域名、账号已替换为占位符（`<WS 域名>` / `<Vercel 账号>`），
+> 避免公开仓库泄露实际基础设施。技术结论、命令、路径写法**一字未改** —— 价值在方法。
+
+| 位置 | 内容 |
+|---|---|
+| 页面 | `https://lan-chess.vercel.app`（Vercel Hobby，账号 `<Vercel 账号>`，项目 `lan-chess`） |
+| WebSocket | `wss://<WS 域名>/ws`（DNS A 记录 → 这台机器；nginx 443 终止 TLS） |
+| 实时服务 | 这台机器上的 `lan-chess-ws.service`（systemd，只跑 WS，不加载 Next.js） |
+| 证书 | acme.sh ECC，webroot `/var/www/acme-challenge`，装在 `/etc/nginx/ssl/<WS 域名>.*`，续签后自动 `systemctl reload nginx` |
+
+**实测数据**：Node 进程常驻内存 **18.8MB**（整站 Next.js 版要 150MB+）；
+磁盘占用 739MB（`node_modules`）；这台机器上还有 4 个线上站点，内存余量 536MB。
+
+**端到端验证过**（真浏览器，不是脚本）：
+
+1. Vercel 首页加载 → 状态灯「已连接，在线 0 人」
+2. 输入用户名进大厅 → 「在线 1」，大厅列表正常
+3. 建房 → 跳到 `/room/26MC`，棋钟 10:00 走起来，2D/3D/聊天/棋谱都在
+4. 刷新页面 → 房间还在（服务端内存态 + 落盘都正常）
+5. 公网 WSS 握手（脚本）→ `session` + `lobby` 都收到
+
+### 17.8 装证书时踩的坑：acme.sh v3 的短参数不能用
+
+acme.sh **v3.1.3** 上，webroot 模式的短参数 `-w` 会被误解析：
+
+```
+Unknown parameter: /var/www/acme-challenge
+```
+
+用**长参数**就正常：
+
+```bash
+/root/.acme.sh/acme.sh --issue --domain <WS 域名> --webroot /var/www/acme-challenge --ecc
+```
+
+装证书（沿用机器上其他域名的约定，`--reloadcmd` 负责续签后自动重载）：
+
+```bash
+/root/.acme.sh/acme.sh --install-cert -d <WS 域名> --ecc \
+  --key-file /etc/nginx/ssl/<WS 域名>.key \
+  --fullchain-file /etc/nginx/ssl/<WS 域名>.fullchain.cer \
+  --reloadcmd "systemctl reload nginx"
+```
+
+**签发顺序**：先建 80 端口的 server 块（带 `location /.well-known/acme-challenge/`）→ reload →
+签证书 → 再加 443 的 server 块。证书不存在时 443 块会让 `nginx -t` 失败。
+
+### 17.9 Origin 白名单（已启用）
+
+```nginx
+location /ws {
+    # 空 Origin（非浏览器客户端，比如门禁脚本）也放行 ——
+    # 所以用正则的一个空分支来写，不能用 `!= ""`
+    #（nginx 的 if 左边是变量时不支持 !=）。
+    if ($http_origin !~* "^(|https://(lan-chess\.vercel\.app|lan-chess-[a-z0-9-]+\.vercel\.app|chess\.example\.com))$") {
+        return 403;
+    }
+    ...
+}
+```
+
+**它防什么、不防什么**（别把它当身份认证）：
+
+- ✅ **防**：别的网站把本服务器塞进自己页面 —— 访客的浏览器会替攻击者连上来建房、发私信。
+  实测部署完几小时内，nginx 日志里已经出现多个陌生 IP 在扫 `/` 和 `/favicon.ico`。
+- ❌ **不防**：脚本攻击者 —— 非浏览器客户端可以自己编 Origin 头，甚至不带。
+  真要挡住，得在 `hello` 里加口令（**改代码**，见 §12）。
+
+### 17.10 以后怎么更新
+
+⚠️ **Vercel 这边没接 GitHub 自动部署** —— `vercel link` 时报
+「You need to add a Login Connection to your GitHub account first」。
+所以现在每次更新要手动跑一次 CLI：
+
+```bash
+# 1. 服务器：拉代码 + 重启
+ssh server 'cd /opt/lan-chess && sudo -u lan-chess git pull && sudo systemctl restart lan-chess-ws'
+
+# 2. Vercel：重新部署（会带上本地的改动）
+cd /path/to/chess-game && vercel --prod
+```
+
+想让 `git push` 自动触发 Vercel 部署：在 Vercel 项目设置里接一个 GitHub Login Connection，
+之后 `vercel git connect` 即可。
+
+**⚠️ 两边必须同源**：Vercel 部署的是**当前工作目录**的内容（`vercel --prod` 会把本地改动一起传上去），
+服务器跑的是 **GitHub main**。本地改了没提交就部署 → 两边代码不一致 → 前端会等一个服务端不认的协议
+（表现为「按钮永远灰着」这类界面在骗人的症状）。**所以：先提交推送，再部署。**
+
+### 17.11 三个「别踩」的坑（实测）
+
+1. **`nginx -t` 的退出码会被管道吞掉**。`nginx -t 2>&1 | tail -3 && systemctl reload nginx`
+   —— 管道后面是 `tail` 的退出码（永远 0），**配置写错了照样会执行 reload**。
+   要判断就用 `nginx -t` 单独跑，看它自己的退出码。
+2. **reload 失败不会打断服务**：nginx 拒绝坏配置、保留旧配置继续跑。所以「reload 报错」不等于「网站挂了」，
+   但也**不等于新配置生效了** —— 一定要再 `nginx -t` 确认一次。
+3. **`git clone` 之后属主变了**，`git log` 会报
+   `detected dubious ownership`。解法是 `git config --system --add safe.directory <路径>`
+   （放系统级，不要用 `--global` —— 服务用户的 HOME 在项目目录里，会往仓库里塞 `.gitconfig`）。
+
 
 
