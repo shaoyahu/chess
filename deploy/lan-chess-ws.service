@@ -1,0 +1,68 @@
+# 局域网国际象棋 —— **只跑 WebSocket** 的 systemd 服务单元
+#
+# 装到：/etc/systemd/system/lan-chess-ws.service
+# 启用：systemctl daemon-reload && systemctl enable --now lan-chess-ws
+# 看日志：journalctl -u lan-chess-ws -f
+#
+# 用途：**混合部署**（页面在 Vercel、实时服务在这台机器上）。
+# 与 `lan-chess.service` 的区别是**不跑 Next.js** —— 见下面「为什么单独一个单元」。
+#
+# 为什么单独一个单元（而不是在 lan-chess.service 里加开关）：
+#  ① **服务器上不用构建 Next.js**。`next build` 的内存峰值能把一台总内存
+#     1586MB 的机器打到**整机僵死**（而且一旦僵死连不上 SSH，只能从云控制台
+#     重启 —— agent 做不到这件事）。只要 WS 就不需要 `.next` 产物，
+#     于是这台机器上**整个构建步骤可以跳过**。
+#     共享生产机上尤其重要：构建会把上面那些线上服务一起拖下水。
+#  ② 常驻内存更小：不加载 Next 的运行时。
+#  ③ 页面在 Vercel，这台机器暴露到公网的只有 nginx 的 443（带 TLS），
+#     应用本身只监听回环地址。
+
+[Unit]
+Description=局域网国际象棋 · WebSocket 服务（混合部署：页面在 Vercel）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 改这里：不要用 root。
+# 房间状态要往 .data 目录落盘，root 跑出来的文件属主是 root，
+# 以后换成普通用户就写不进去了（部署自检第 4 项会报这个）。
+User=lan-chess
+Group=lan-chess
+
+# 改这里：项目目录（要能用服务用户读，.data 要能写）
+WorkingDirectory=/opt/lan-chess
+
+Environment=NODE_ENV=production
+
+# 只监听回环地址 —— 公网暴露的是 nginx 的 443，不是这个端口。
+# 真要直接对外（临时调试）才改成 0.0.0.0。
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+
+# 存档目录。默认是 <项目目录>/.data，单独指出来更清楚，
+# 也方便跟「整站部署」那套并存（两个单元各写各的存档）。
+Environment=LAN_CHESS_DATA_DIR=/opt/lan-chess/.data
+
+# 装了原生 Stockfish 的话把路径写这儿；不写就自动用 npm 的 WASM 版。
+# ⚠️ 这台机器内存紧张的话，建议装**原生** Stockfish（同哈希下更省内存、更快）。
+# Environment=STOCKFISH_PATH=/usr/games/stockfish
+
+# 改这里：node 的绝对路径（which node 查）。
+# 直接用 tsx 的 CLI，避免多一层 npm 包装（npm start 会再套一层 sh）。
+ExecStart=/usr/bin/node /opt/lan-chess/node_modules/tsx/dist/cli.mjs server-ws.ts
+
+Restart=always
+RestartSec=3
+
+# 崩溃时留日志，别静默重启
+StandardOutput=journal
+StandardError=journal
+
+# 基本加固：不让提权，/tmp 私有
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

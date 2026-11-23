@@ -6,7 +6,7 @@
  *   跟「棋盘长得好看」「走子箭头看得见」都不是一回事。
  *   混在一起会让任何一个脚本的失败都很难定位。
  *
- * 门禁清单（14 条，D1~D14）：
+ * 门禁清单（15 条，D1~D15）：
  *   D1  大厅顶栏「在线 N」点开就是**真人名单**：
  *       数字 = 名单人数、名单里有对面那个真人、自己的那行标着「你」。
  *   D2  在名单里**右键**某人 → 弹出菜单 → 点「发送消息」→
@@ -29,6 +29,9 @@
  *       冷却过去还能再发（是**延迟**，不是把功能弄没了）；服务端也拒收第二条。
  *   D14 **消息通知限位右上角** —— 同一个人的连发合并成一条提示，
  *       好几个人各发一条时可见提示**最多 4 条**，且整列待在右上角。
+ *   D15 **私信的互惠限流** —— 连着发 3 条之后**必须等对方回一条**才能继续
+ *       （挡住陌生人单方面骚扰）：按钮变灰、按了也发不出去；
+ *       对方一回话就恢复可点；服务端也拒收第 4 条（改协议绕不过去）。
  *
  * 判定方式跟项目规矩一致：**进程退出码** + 门禁自己打印的 ❌ 行 + 门禁编号。
  * 每条门禁的失败信息都必须带上自己的编号（D1…D11）——
@@ -293,6 +296,31 @@ class GameClient {
   /** 从水位线之后起，符合条件的有几条 */
   countSince(mark: number, pred: (m: Record<string, any>) => boolean): number {
     return this.msgs.slice(mark).filter(pred).length;
+  }
+
+  /**
+   * 等一条**水位线之后**的新消息。
+   *
+   * 为什么不能直接用 `waitFor`：它是从**队头**扫的 ——
+   * 早先那条也满足条件的话，它会**立刻**返回那条旧的，
+   * 于是「数新增」就数成了 0（假绿）。互惠限流这种
+   * 「上一轮已经被拒过一次」的场景正好会撞上。
+   */
+  async waitNew<T>(
+    mark: number,
+    pred: (m: Record<string, any>) => T | null,
+    label: string,
+    timeoutMs = 15000,
+  ): Promise<T> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      for (let i = mark; i < this.msgs.length; i += 1) {
+        const v = pred(this.msgs[i]);
+        if (v !== null && v !== undefined) return v;
+      }
+      await sleep(100);
+    }
+    throw new Error(`等待「${label}」超时`);
   }
 
   close(): void {
@@ -1755,6 +1783,22 @@ async function main(): Promise<void> {
            * 私密信每发一条，**对面**就弹一条提示；
            * 不限频的话，对面的顶栏会被糊成**一整列提示条**（用户反馈）。
            */
+          /*
+           * **先等冷却过去**再点第一下。
+           *
+           * 为什么必须等：上一条门禁（D3）刚发过一条私信，
+           * 1.4 秒的冷却**还在**的话，按钮是灰的 —— 点了也发不出去，
+           * 于是「对面收到 0 条」就变成一条**假红**
+           * （单跑「消息」这一组时必踩：组里两条门禁挨得太近）。
+           *
+           * 等按钮**恢复可点**再点，这条门禁才不依赖前面那条留下的时间差。
+           */
+          await waitForExpr(
+            `document.querySelector('.dm-quick .rail-quick-btn') && ` +
+              `!document.querySelector('.dm-quick .rail-quick-btn').disabled`,
+            '快捷短语按钮恢复可点（冷却过去）',
+            8000,
+          );
           const mark = peer.mark();
           await clickSelector('.dm-quick .rail-quick-btn', '第一颗快捷短语');
           await sleep(300);
@@ -1963,6 +2007,146 @@ async function main(): Promise<void> {
             for (const c of extraPeople) c.close();
             extraPeople.length = 0;
           }
+        });
+      }
+
+      /* ================================================================ */
+      /* D15：私信的互惠限流（连发 3 条 → 要等对方回一条）                  */
+      /* ================================================================ */
+      if (gateFilter('D15')) {
+        await step('D15', '私信互惠限流（连发 3 条后按钮变灰、对方回话后恢复）', async () => {
+          await ensureLobby();
+          await openDmWithPeer();
+
+          const uid = await browserUserId();
+          if (!uid) throw new Error('D15 拿不到浏览器的 userId');
+
+          /*
+           * ① **先把额度清干净**（一来一回，两个方向的「未回应条数」都归零）。
+           *
+           * 为什么要有这一步：前面的门禁（D3 / D13）也发过私信，
+           * 额度是**累计**的 —— 不清零的话，这条门禁验的就不是
+           * 「连发 3 条」而是「连发第几条」，含义会飘。
+           */
+          await clickSelector('.dm-panel .dm-quick .rail-quick-btn', '快捷短语（清零用）');
+          await sleep(1600);
+          peer.send({ t: 'dm.send', to: uid, text: '来一盘？' });
+          await sleep(600);
+
+          /*
+           * ② **客户端**：连发 3 条 → 按钮**变灰**（发不了了）。
+           *
+           * 规则（用户 2026-11-20 提的）：连着发 3 条之后，
+           * 必须等**对方回一条**才能继续 —— 挡住陌生人单方面骚扰。
+           *
+           * 每点一下要等过 1.2 秒的冷却才能点下一颗（服务端也按那个间隔拒收）。
+           */
+          const mark = peer.mark();
+          for (let i = 0; i < 3; i += 1) {
+            await clickSelector('.dm-panel .dm-quick .rail-quick-btn', '快捷短语');
+            await sleep(1600);
+          }
+          /* 再等一会儿 —— 确认灰的是「被锁住」，不是「冷却中」 */
+          await sleep(1600);
+          const blocked = await evaluate<{ disabled: boolean; footText: string }>(`
+            (() => {
+              const btns = [...document.querySelectorAll('.dm-panel .dm-quick .rail-quick-btn')];
+              return {
+                disabled: btns.length > 0 && btns.every((b) => b.disabled),
+                footText: (document.querySelector('.dm-foot')?.innerText || '').trim(),
+              };
+            })()
+          `);
+          await shot('d15-blocked');
+          if (!blocked.disabled) {
+            throw new Error(
+              'D15 连发 3 条之后快捷短语还能点 —— 没人回也能一直发，陌生人就能一直骚扰',
+            );
+          }
+          /* 灰着就该按不动：点了也不发出去 */
+          const before = peer.countSince(mark, (m) => m.t === 'dm');
+          await clickSelector('.dm-panel .dm-quick .rail-quick-btn', '被锁住时的快捷短语');
+          await sleep(600);
+          const after = peer.countSince(mark, (m) => m.t === 'dm');
+          if (after !== before) {
+            throw new Error(
+              `D15 按了灰色的快捷短语，对面还是收到了 ${after - before} 条（应该一条都发不出去）`,
+            );
+          }
+          /*
+           * **不许多写一句提示**（用户拍板：「按钮变灰就是完整的表达」）。
+           *
+           * 和 D13 那条判据是同一个口味：冷却没有文字，被锁住也不该有。
+           */
+          if (/还没回|暂时发不了|等对方|等待对方/.test(blocked.footText)) {
+            throw new Error(
+              `D15 被锁住时多出了提示文字：「${blocked.footText}」—— 按钮变灰已经说明了一切`,
+            );
+          }
+
+          /*
+           * ③ **对方回一条 → 我又能发了**。
+           *
+           * 这一条同时验了两件事：客户端在对方回应后**解锁**，
+           * 而且额度是**服务端推过来**的（`dm.state`）。
+           */
+          const themBefore = await evaluate<number>(
+            `document.querySelectorAll('.dm-panel .dm-msg.them').length`,
+          );
+          peer.send({ t: 'dm.send', to: uid, text: '来一盘？' });
+          await waitForExpr(
+            `document.querySelector('.dm-panel .dm-quick .rail-quick-btn') && ` +
+              `!document.querySelector('.dm-panel .dm-quick .rail-quick-btn').disabled`,
+            '对方回话后按钮恢复可点',
+            8000,
+          );
+          await shot('d15-unlocked');
+
+          /*
+           * ④ **服务端也拒收**（客户端那层只是给人看的，改个协议就能绕过去）。
+           *
+           * 对面这一轮已经用掉 2 条额度（① 的回话 + ③ 的回话），
+           * 再发 2 条正好到 3，第 3 条要被服务端挡下来 ——
+           * 浏览器这边**只**该收到 4 条（① 1 条 + ③ 1 条 + ④ 2 条）。
+           */
+          const mark2 = peer.mark();
+          for (const t of ['马上到', '缺个对手']) {
+            await sleep(1600);
+            peer.send({ t: 'dm.send', to: uid, text: t });
+          }
+          await sleep(1600);
+          /* 第 3 条 —— 对方还没回我 → 服务端拒收 */
+          peer.send({ t: 'dm.send', to: uid, text: '下次一定' });
+          await peer.waitNew(
+            mark2,
+            (m) =>
+              m.t === 'toast' && m.kind === 'error' && String(m.message || '').includes('还没回')
+                ? m
+                : null,
+            '服务端拒收第 3 条私信',
+            8000,
+          );
+          const rejected = peer.countSince(
+            mark2,
+            (m) => m.t === 'toast' && m.kind === 'error' && String(m.message || '').includes('还没回'),
+          );
+          const themAfter = await evaluate<number>(
+            `document.querySelectorAll('.dm-panel .dm-msg.them').length`,
+          );
+          await shot('d15-server-limit');
+          if (themAfter - themBefore !== 3) {
+            throw new Error(
+              `D15 对面又发了 2 条，浏览器收到了 ${themAfter - themBefore} 条（应该是 3 条：① 的回话 + ③ 的回话 + ④ 的 2 条）`,
+            );
+          }
+          if (rejected < 1) {
+            throw new Error('D15 服务端拒收时没有给出「对方还没回消息」的原因');
+          }
+          verdict(
+            true,
+            'D15 私信互惠限流（连发 3 条后按钮变灰、对方回话后恢复）',
+            `客户端：连发 3 条后按钮变灰、按了也发不出去｜对方回话后恢复可点｜服务端也拒收（浏览器只收到 3 条）`,
+          );
         });
       }
     } finally {

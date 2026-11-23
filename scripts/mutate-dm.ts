@@ -14,12 +14,18 @@
  *
  * 每条变异都要重新构建 + 重启服务，门禁跑的是生产构建 —— 慢，但真。
  *
+ * **它会自己重建 + 重启服务** —— 所以**端口、构建目录、存档目录必须隔离**：
+ * 端口从 `--url=` 推出来（绝不写死 3000，否则会 kill 掉用户的服务），
+ * 构建目录用 `.next-gate-dm`（`NEXT_DIST_DIR`），
+ * 存档目录用 `/tmp/chess-gate-dm-data`（`LAN_CHESS_DATA_DIR`）。
+ *
  * 用法：
- *   npx tsx scripts/mutate-dm.ts [--url=http://127.0.0.1:3000] [--filter=片段] [--dry]
+ *   npx tsx scripts/mutate-dm.ts [--url=http://127.0.0.1:41777] [--filter=片段] [--dry]
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { allGateIds, checkGroupCoverage, groupsOfGate } from './lib/gate-groups';
 import { DM_GROUPS } from './lib/dm-groups';
@@ -37,6 +43,22 @@ if (!/^https?:\/\//.test(APP_URL)) {
   process.exit(1);
 }
 const ROOT = process.cwd();
+
+/*
+ * **三样东西必须隔离** —— 这个脚本会 build、起服务、造用户：
+ *
+ * | 东西       | 隔离成什么                  | 不隔离会怎样                                |
+ * |------------|-----------------------------|-------------------------------------------|
+ * | 端口       | `--url=` 里的端口            | `kill -9` 掉用户 `npm run dev` 的服务      |
+ * | 构建目录   | `.next-gate-dm`              | build 清空 `.next`，用户的 dev 服务当场坏掉 |
+ * | 存档目录   | `/tmp/chess-gate-dm-data`    | 门禁造的会话落进用户的真实存档             |
+ *
+ * 端口**从 `--url=` 推出来**，绝不写死 3000。
+ * 三个都可以用环境变量覆盖（并行开发时各用各的）。
+ */
+const PORT = Number(new URL(APP_URL).port || 3000);
+const DIST_DIR = process.env.NEXT_DIST_DIR ?? '.next-gate-dm';
+const DATA_DIR = process.env.LAN_CHESS_DATA_DIR ?? join(tmpdir(), 'chess-gate-dm-data');
 
 interface Mutation {
   /** 变异名 */
@@ -299,10 +321,10 @@ const MUTATIONS: Mutation[] = [
       `    /* 冷却中：直接不发（按钮已经是灰的，这里是第二道保险） */
     if (Date.now() < cooldownUntil) return;
 `,
-      `                    disabled={cooling}
+      `                    disabled={cooling || blocked}
                   >
                     {t}`,
-      `                  disabled={cooling}
+      `                  disabled={cooling || blocked}
                 >
                   <Swords`,
     ],
@@ -375,6 +397,70 @@ const MUTATIONS: Mutation[] = [
               </div>`,
     expect: 'D13',
   },
+  {
+    /*
+     * 【二十】服务端**不再互惠限流** ——
+     * 连着发 3 条之后不锁住，陌生人可以一直刷下去。
+     */
+    name: '【二十】服务端不再互惠限流（连发 3 条后还能接着发）',
+    file: 'src/server/ws-hub.ts',
+    from: `    if (this.dmRemaining(from.userId, to) <= 0) {
+      this.send(client, { t: 'toast', kind: 'error', message: '对方还没回消息，暂时发不了' });
+      return;
+    }
+    /* 限频放在「对方还在不在」之后：没发出去的私信不该占掉发送间隔 */`,
+    to: `    // 变异：不再拦
+    /* 限频放在「对方还在不在」之后：没发出去的私信不该占掉发送间隔 */`,
+    expect: 'D15',
+  },
+  {
+    /*
+     * 【二十一】对方回了消息**也不解锁** ——
+     * 一问一答都聊不下去了（对方明明回了，我还是发不出去）。
+     */
+    name: '【二十一】对方回话了也不解锁（额度不归零）',
+    file: 'src/server/ws-hub.ts',
+    from: `    // 对方刚刚回应了我 → 对方对我的「未回应条数」归零
+    this.dmBurst.get(to)?.delete(from);`,
+    to: `    // 变异：对方回了也不归零`,
+    expect: 'D15',
+  },
+  {
+    /*
+     * 【二十二】推给客户端的额度**推反了**（推的是对方的额度，不是我的）——
+     * 客户端据此判断该不该变灰，推反了就永远不变灰。
+     */
+    name: '【二十二】额度状态推反了（推的是对方的额度）',
+    file: 'src/server/ws-hub.ts',
+    from: `        states: [{ peer: toId, remaining: this.dmRemaining(fromId, toId) }],`,
+    to: `        states: [{ peer: toId, remaining: this.dmRemaining(toId, fromId) }],`,
+    expect: 'D15',
+  },
+  {
+    /*
+     * 【二十三】客户端**不按额度把按钮变灰** ——
+     * 服务端拒收是对的，但界面看不出来（点了才知道发不出去）。
+     */
+    name: '【二十三】客户端不按额度把按钮变灰（界面不反映真实状态）',
+    file: 'src/components/DirectMessagePanel.tsx',
+    from: `                    disabled={cooling || blocked}
+                  >
+                    {t}`,
+    to: `                    disabled={cooling}
+                  >
+                    {t}`,
+    expect: 'D15',
+  },
+  {
+    /*
+     * 【二十四】门槛从 3 条放宽成 99 条 —— 等于**没限**。
+     */
+    name: '【二十四】互惠限流的门槛放宽成 99 条（等于没限）',
+    file: 'src/lib/constants.ts',
+    from: `export const DM_MAX_UNANSWERED = 3;`,
+    to: `export const DM_MAX_UNANSWERED = 99;`,
+    expect: 'D15',
+  },
 ];
 
 const sh = (cmd: string, args: string[]): { code: number; out: string } => {
@@ -383,7 +469,7 @@ const sh = (cmd: string, args: string[]): { code: number; out: string } => {
 };
 
 /**
- * 当前**监听** 3000 端口的 PID 列表。
+ * 当前**监听目标端口**的 PID 列表。
  *
  * 注意 `-sTCP:LISTEN` —— **只算监听方**。
  * 原来写的是 `lsof -ti tcp:3000`，那会把**连着** 3000 的**客户端**也捞进来：
@@ -391,13 +477,17 @@ const sh = (cmd: string, args: string[]): { code: number; out: string } => {
  * 而这段的用途是 `kill -9` —— 于是门禁会把自己的进程、用户的浏览器一起杀掉。
  */
 function listeners(): string[] {
-  const r = spawnSync('bash', ['-c', "lsof -nP -iTCP:3000 -sTCP:LISTEN -t 2>/dev/null | tr '\\n' ' '"], {
-    encoding: 'utf8',
-  });
+  const r = spawnSync(
+    'bash',
+    ['-c', `lsof -nP -iTCP:${PORT} -sTCP:LISTEN -t 2>/dev/null | tr '\\n' ' '`],
+    {
+      encoding: 'utf8',
+    },
+  );
   return (r.stdout ?? '').trim().split(/\s+/).filter(Boolean);
 }
 
-/** 停掉监听 3000 的服务，并**等端口真的空出来** */
+/** 停掉监听目标端口的服务，并**等端口真的空出来** */
 function stopServer(): void {
   for (let i = 0; i < 40; i += 1) {
     const pids = listeners();
@@ -409,16 +499,24 @@ function stopServer(): void {
 }
 
 /**
- * 起新服务，并确认**监听 3000 的是新起的那个**。
+ * 起新服务，并确认**监听目标端口的是新起的那个**。
  *
  * 不能只看 `curl 200`：新服务起不来时 curl 会打到**旧服务**上，
  * 门禁跑的是上一条变异的产物 —— 结论直接作废，而且症状极隐蔽。
  */
 function startServer(before: Set<string>): void {
-  spawnSync('bash', ['-c', `PORT=3000 nohup npm start > /tmp/chess-server.log 2>&1 &`], {
-    cwd: ROOT,
-    stdio: 'ignore',
-  });
+  spawnSync(
+    'bash',
+    [
+      '-c',
+      `PORT=${PORT} NEXT_DIST_DIR=${DIST_DIR} LAN_CHESS_DATA_DIR=${DATA_DIR} ` +
+        `nohup npm start > /tmp/chess-server.log 2>&1 &`,
+    ],
+    {
+      cwd: ROOT,
+      stdio: 'ignore',
+    },
+  );
   for (let i = 0; i < 60; i += 1) {
     const r = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', `${APP_URL}/`], {
       encoding: 'utf8',
@@ -447,7 +545,7 @@ function rebuild(): void {
   const before = new Set(listeners());
   stopServer();
 
-  const b = sh('npm', ['run', 'build']);
+  const b = sh('bash', ['-c', `NEXT_DIST_DIR=${DIST_DIR} npm run build`]);
   if (b.code !== 0) {
     console.error(b.out.slice(-2000));
     throw new Error('构建失败');
@@ -455,10 +553,10 @@ function rebuild(): void {
 
   /*
    * build 之后**校验产物完整**。
-   * Next 的 build 会先把 `.next` 清空再写；被打断就留下半成品，
+   * Next 的 build 会先把构建目录清空再写；被打断就留下半成品，
    * 症状是「服务起不来」，而真正的原因在几分钟之前。
    */
-  if (!existsSync(join(ROOT, '.next/BUILD_ID'))) {
+  if (!existsSync(join(ROOT, DIST_DIR, 'BUILD_ID'))) {
     console.error('   · 构建产物不完整（.next/BUILD_ID 缺失）—— build 很可能被中断了');
     throw new Error('构建产物不完整');
   }

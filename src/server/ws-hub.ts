@@ -11,6 +11,7 @@ import { parseClientMessage, type ServerMessage } from '../lib/protocol';
 import {
   CHAT_MAX_LEN,
   DEFAULT_TIME_CONTROL,
+  DM_MAX_UNANSWERED,
   DM_QUICK_TEXT_SET,
   DM_SEND_MIN_INTERVAL_MS,
   HEARTBEAT_INTERVAL_MS,
@@ -113,6 +114,21 @@ export class WsHub {
    * 期间所有房间的广播、棋钟计时全部停摆）。
    */
   private enginePool: EnginePool;
+
+  /**
+   * 私信的**互惠限流**计数。
+   *
+   * 结构：`我 → 对方` → 「我发了多少条、对方还没回」。
+   *
+   * 为什么按 **userId** 记，而不是记在连接上：
+   *   - 记在连接上 → **换个标签页 / 断线重连就重置了**，
+   *     骚扰者只要刷新一下就能接着刷（规则等于没有）；
+   *   - 按 userId 记 → 换设备、刷新、重连都是同一份计数。
+   *
+   * 为什么只记「未回应」的那些：对方一回就归零并删掉条目，
+   * 于是这张表里留下的**全是还没被回应的对话** —— 数量天然有界。
+   */
+  private dmBurst = new Map<string, Map<string, number>>();
 
   /** 心跳间隔（毫秒） */
   private readonly heartbeatIntervalMs: number;
@@ -322,6 +338,14 @@ export class WsHub {
       userId: client.identity.userId,
       name: client.identity.name,
     });
+
+    /*
+     * 把「我还能给谁发几条私信」推给客户端（互惠限流的状态）。
+     *
+     * 登录和重连都要推 —— 客户端手里那份可能是**旧的**
+     * （服务端重启过 / 换过设备），全量推一次才对得上。
+     */
+    this.pushDmAllState(client);
 
     // 恢复房间状态
     if (client.roomCode) {
@@ -1107,7 +1131,12 @@ export class WsHub {
   private cleanupSessions(): void {
     const now = Date.now();
     for (const [token, record] of this.sessions) {
-      if (now - record.lastActiveAt > SESSION_TTL_MS) this.sessions.delete(token);
+      if (now - record.lastActiveAt > SESSION_TTL_MS) {
+        this.sessions.delete(token);
+        /* 这个人彻底走了 → 他那套私信计数也一起清掉（别让表无限长） */
+        this.dmBurst.delete(record.userId);
+        for (const map of this.dmBurst.values()) map.delete(record.userId);
+      }
     }
   }
 
@@ -1275,6 +1304,87 @@ export class WsHub {
   }
 
   /**
+   * **私信的互惠限流** —— 我还能给 `to` 发几条。
+   *
+   * 规则见 `DM_MAX_UNANSWERED`：连着发满 3 条之后，
+   * 必须等**对方回一条**才能继续 —— 「能不能继续说，取决于对方有没有理我」。
+   *
+   * @param from 我（userId）
+   * @param to 对方（userId）
+   * @returns 还能发几条（0 = 已锁住）
+   */
+  private dmRemaining(from: string, to: string): number {
+    const count = this.dmBurst.get(from)?.get(to) ?? 0;
+    return Math.max(0, DM_MAX_UNANSWERED - count);
+  }
+
+  /**
+   * 记一次「from 发了 to」。
+   *
+   * 两件事同时发生：
+   *   - `from → to` 的未回应条数 **+1**（对方还没理我）；
+   *   - `to → from` 的未回应条数 **归零** —— 因为 from 这一条**就是**对 to 的回应，
+   *     它一出来，to 那边就解锁了。
+   *
+   * 归零的条目直接**删掉**：这张表里留下的全是「还没被回应」的对话，数量天然有界。
+   */
+  private noteDmSent(from: string, to: string): void {
+    let mine = this.dmBurst.get(from);
+    if (!mine) {
+      mine = new Map();
+      this.dmBurst.set(from, mine);
+    }
+    mine.set(to, (mine.get(to) ?? 0) + 1);
+    // 对方刚刚回应了我 → 对方对我的「未回应条数」归零
+    this.dmBurst.get(to)?.delete(from);
+  }
+
+  /**
+   * 把「这两个人之间我还能发几条」推给**双方**。
+   *
+   * 为什么必须推给**对方**：对方收到我这条消息时，他那边的额度**也变了** ——
+   * 他之前被我刷过（被我锁住），现在我终于理他了，他解锁了。
+   * 不推的话，对方的按钮会一直灰着，直到他自己去点一次被拒才知道。
+   */
+  private pushDmPairState(fromId: string, toId: string): void {
+    const from = this.findClientByUserId(fromId);
+    if (from) {
+      this.send(from, {
+        t: 'dm.state',
+        states: [{ peer: toId, remaining: this.dmRemaining(fromId, toId) }],
+      });
+    }
+    const to = this.findClientByUserId(toId);
+    if (to) {
+      this.send(to, {
+        t: 'dm.state',
+        states: [{ peer: fromId, remaining: this.dmRemaining(toId, fromId) }],
+      });
+    }
+  }
+
+  /**
+   * 把「我还能给谁发几条」**全量**推给某个连接（登录 / 重连时）。
+   *
+   * 为什么要有全量：客户端手里那份状态可能是**旧的** ——
+   * 比如服务端重启过（计数清零）而客户端没重载（还留着「发不了」的旧状态）。
+   * 全量推一次，两边就对齐了。
+   */
+  private pushDmAllState(client: Client): void {
+    const me = client.identity?.userId;
+    if (!me) return;
+    const peers = new Set<string>();
+    for (const peer of this.dmBurst.get(me)?.keys() ?? []) peers.add(peer);
+    for (const [owner, map] of this.dmBurst) {
+      if (owner !== me && map.has(me)) peers.add(owner);
+    }
+    this.send(client, {
+      t: 'dm.state',
+      states: [...peers].map((peer) => ({ peer, remaining: this.dmRemaining(me, peer) })),
+    });
+  }
+
+  /**
    * 私信（点对点）。
    *
    * 不经过房间：大厅「在线 N」名单里右键某人 → 直接发给他。
@@ -1301,6 +1411,21 @@ export class WsHub {
       this.send(client, { t: 'toast', kind: 'error', message: '对方已经不在线了' });
       return;
     }
+    /*
+     * **互惠限流**（`DM_MAX_UNANSWERED`）：连着发满 3 条之后，
+     * 必须等**对方回一条**才能继续 —— 挡住「不等回应、一直骚扰」。
+     *
+     * 为什么这条要挡在发送**之前**而不是事后过滤：
+     * 事后过滤意味着对面**已经收到**了那条（提示已经弹出来了），
+     * 那就只剩个位数限制的效果 —— 骚扰的**观感**恰恰是「对面一直被打扰」。
+     *
+     * 为什么排在「发送太快了」**前面**：被锁住才是真正的原因，
+     * 先说「等一下」会让人以为等 1.2 秒就能发出去（其实永远发不了）。
+     */
+    if (this.dmRemaining(from.userId, to) <= 0) {
+      this.send(client, { t: 'toast', kind: 'error', message: '对方还没回消息，暂时发不了' });
+      return;
+    }
     /* 限频放在「对方还在不在」之后：没发出去的私信不该占掉发送间隔 */
     if (this.dmTooFast(client)) return;
     const message: DirectMessage = {
@@ -1314,6 +1439,9 @@ export class WsHub {
     };
     this.send(target, { t: 'dm', message });
     this.send(client, { t: 'dm', message });
+    /* 记一次「我发了对方」并把新的额度推给双方 */
+    this.noteDmSent(from.userId, to);
+    this.pushDmPairState(from.userId, to);
   }
 
   /**
@@ -1368,6 +1496,16 @@ export class WsHub {
       this.send(client, { t: 'toast', kind: 'error', message: '对方已经不在线了' });
       return;
     }
+    /*
+     * **互惠限流也共用一个桶**（`DM_MAX_UNANSWERED`）。
+     *
+     * 为什么邀请也算一条：邀请在对方面板上长得也像一条私信（同样弹提示），
+     * 分成两个桶就等于留了一条「文字被挡了就改发邀请」的绕路。
+     */
+    if (this.dmRemaining(from.userId, to) <= 0) {
+      this.send(client, { t: 'toast', kind: 'error', message: '对方还没回消息，暂时发不了' });
+      return;
+    }
     /* 限频放在「对方还在不在」之后：没发出去的邀请不该占掉发送间隔 */
     if (this.dmTooFast(client)) return;
     const message: DirectMessage = {
@@ -1383,6 +1521,9 @@ export class WsHub {
     };
     this.send(target, { t: 'dm', message });
     this.send(client, { t: 'dm', message });
+    /* 记一次「我发了对方」并把新的额度推给双方 */
+    this.noteDmSent(from.userId, to);
+    this.pushDmPairState(from.userId, to);
   }
 
   private lobbyState(): LobbyState {

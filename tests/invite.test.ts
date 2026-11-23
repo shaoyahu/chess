@@ -13,6 +13,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { WebSocket as WsClient } from 'ws';
 import { WsHub } from '@/server/ws-hub';
 import { parseClientMessage, type ServerMessage } from '@/lib/protocol';
+import { DM_SEND_MIN_INTERVAL_MS } from '@/lib/constants';
 
 let server: Server;
 let hub: WsHub;
@@ -312,5 +313,40 @@ describe('房间邀请（服务端规矩）', () => {
     expect(toast.t).toBe('toast');
 
     alice.close();
+  });
+
+  /**
+   * **邀请和私信共用一个额度**（互惠限流 `DM_MAX_UNANSWERED`）。
+   *
+   * 为什么：邀请在对方面板上也长得像一条私信（同样弹一条提示），
+   * 分成两个桶就等于留了一条「文字被挡了就改发邀请」的绕路。
+   */
+  it('邀请和私信共用一个额度：私信发满 3 条后邀请也发不出去', async () => {
+    const alice = new TestClient();
+    const bob = new TestClient();
+    await Promise.all([alice.connect(), bob.connect()]);
+    await Promise.all([alice.hello('A'), bob.hello('B')]);
+
+    alice.send({ t: 'room.create', timeControl: '10+0' });
+    const room = await alice.latestRoom();
+
+    /* 连发 3 条私信（每条之间要过 1.2 秒的最小发送间隔） */
+    for (const t of ['来一盘？', '马上到', '缺个对手']) {
+      alice.send({ t: 'dm.send', to: bob.userId, text: t });
+      await bob.waitFor((m) => m.t === 'dm' && m.message.text === t);
+      await settle(DM_SEND_MIN_INTERVAL_MS + 100);
+    }
+
+    /* 额度满了 → 邀请也发不出去 */
+    alice.send({ t: 'dm.invite', to: bob.userId, roomCode: room.state.code });
+    const toast = await alice.waitFor(
+      (m) => m.t === 'toast' && m.kind === 'error' && m.message.includes('还没回'),
+    );
+    expect(toast.t).toBe('toast');
+    await settle(300);
+    expect(bob.invites().length).toBe(0);
+
+    alice.close();
+    bob.close();
   });
 });

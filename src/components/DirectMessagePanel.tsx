@@ -30,7 +30,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Swords, X } from 'lucide-react';
 import { useSocket } from '@/hooks/useSocket';
-import { DM_QUICK_CHATS, DM_SEND_MIN_INTERVAL_MS } from '@/lib/constants';
+import { DM_MAX_UNANSWERED, DM_QUICK_CHATS, DM_SEND_MIN_INTERVAL_MS } from '@/lib/constants';
 import type { DirectMessage } from '@/lib/types';
 
 /** 一个对话对象 */
@@ -65,6 +65,7 @@ export function DirectMessagePanel({ open, onClose, peer, onSelectPeer }: Direct
   const {
     dms,
     dmUnread,
+    dmRemaining,
     session,
     room,
     sendDm,
@@ -106,6 +107,16 @@ export function DirectMessagePanel({ open, onClose, peer, onSelectPeer }: Direct
 
   /** 冷却中（按钮按不动） */
   const cooling = cooldownUntil > 0;
+
+  /*
+   * **互惠限流**：连着发满 3 条之后，必须等**对方回一条**才能继续。
+   *
+   * 这份额度是**服务端推来的**（`dm.state`）—— 客户端不自己数。
+   * 表里没有这个人 = 额度是满的（默认能发）。
+   */
+  const remaining = peer ? (dmRemaining[peer.userId] ?? DM_MAX_UNANSWERED) : DM_MAX_UNANSWERED;
+  /** 被锁住了：按钮按不动 */
+  const blocked = remaining <= 0;
 
   /*
    * 冷却结束就把状态清掉（按钮恢复可点）。
@@ -187,6 +198,8 @@ export function DirectMessagePanel({ open, onClose, peer, onSelectPeer }: Direct
     if (!peer) return;
     /* 冷却中：直接不发（按钮已经是灰的，这里是第二道保险） */
     if (Date.now() < cooldownUntil) return;
+    /* 被锁住：对方还没回消息，发了也会被服务端拒（这里同样不费那个请求） */
+    if (blocked) return;
     sendDm(peer.userId, body);
     setCooldownUntil(Date.now() + CLIENT_COOLDOWN_MS);
   };
@@ -195,6 +208,8 @@ export function DirectMessagePanel({ open, onClose, peer, onSelectPeer }: Direct
   const sendInvite = (): void => {
     if (!peer || !inviteRoom) return;
     if (Date.now() < cooldownUntil) return;
+    /* 邀请和私信共用一个额度桶 */
+    if (blocked) return;
     sendDmInvite(peer.userId, inviteRoom.code);
     setCooldownUntil(Date.now() + CLIENT_COOLDOWN_MS);
   };
@@ -298,7 +313,7 @@ export function DirectMessagePanel({ open, onClose, peer, onSelectPeer }: Direct
                 <button
                   className="btn small dm-invite-send"
                   onClick={sendInvite}
-                  disabled={cooling}
+                  disabled={cooling || blocked}
                 >
                   <Swords size={14} aria-hidden="true" />
                   邀请来这局 · {inviteRoom.code}
@@ -332,7 +347,7 @@ export function DirectMessagePanel({ open, onClose, peer, onSelectPeer }: Direct
                     key={t}
                     className="rail-quick-btn"
                     onClick={() => sendQuick(t)}
-                    disabled={cooling}
+                    disabled={cooling || blocked}
                   >
                     {t}
                   </button>

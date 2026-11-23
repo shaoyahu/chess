@@ -19,6 +19,7 @@ import {
   CLIENT_HEARTBEAT_INTERVAL_MS,
   CLIENT_HEARTBEAT_TIMEOUT_MS,
 } from '@/lib/constants';
+import { resolveWsUrl } from '@/lib/ws-url';
 
 export interface Session {
   token: string;
@@ -64,6 +65,18 @@ export interface SocketState {
   dms: DirectMessage[];
   /** 私信未读数（对方发来、而「私信」面板没打开过） */
   dmUnread: number;
+  /**
+   * 私信的**剩余额度**：对方的 userId → 我还能给他发几条。
+   *
+   * 0 = 被锁住（连着发满 3 条、对方还没回）—— 界面据此把发送按钮变灰。
+   *
+   * 这份状态**由服务端推来**（`dm.state`），客户端不自己数：
+   * 自己数会和服务端对不上（换设备 / 服务端重启过），
+   * 对不上的后果是「按钮一直灰着，怎么都发不出去」。
+   *
+   * 表里**没有**的人 = 额度是满的（默认能发）。
+   */
+  dmRemaining: Record<string, number>;
   /**
    * **最近一次「进不去房间」的原因**（null = 没有）。
    *
@@ -320,6 +333,7 @@ class SocketManager {
     toasts: [],
     dms: [],
     dmUnread: 0,
+    dmRemaining: {},
     joinError: null,
   };
 
@@ -414,8 +428,24 @@ class SocketManager {
     if (typeof window === 'undefined') return;
     if (this.socket && this.socket.readyState <= 1) return;
 
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${proto}://${window.location.host}/ws`);
+    /*
+     * 连哪里：
+     *  - 默认**同源**（`ws(s)://<当前 host>/ws`）—— 本地 / 局域网 / 整站一台机器；
+     *  - 配了 `NEXT_PUBLIC_WS_URL` 就连那个（混合部署：页面在 Vercel，
+     *    实时服务在另一台机器）。
+     *
+     * ⚠️ 这里必须是 `process.env.NEXT_PUBLIC_WS_URL` 的**静态成员访问**：
+     * Next.js 只对这种写法做构建期内联，写成 `process.env[key]` 或先解构
+     * 再取值就替换不掉，浏览器里拿到的是 undefined（静默退回同源，
+     * 表现是「页面在 Vercel，但连的还是 vercel.app/ws」）。
+     */
+    const socket = new WebSocket(
+      resolveWsUrl(
+        process.env.NEXT_PUBLIC_WS_URL,
+        window.location.protocol,
+        window.location.host,
+      ),
+    );
     this.socket = socket;
 
     socket.onopen = () => {
@@ -485,6 +515,16 @@ class SocketManager {
             session: { token: msg.token, userId: msg.userId, name: msg.name },
             dms: restored ? restored.dms : this.state.dms,
             dmUnread: restored ? restored.unread : this.state.dmUnread,
+            /*
+             * **私信的额度状态清空**，等服务端推新的过来。
+             *
+             * 为什么登录/重连时要清：手里那份可能是**旧的** ——
+             * 比如服务端重启过（计数清零、其实能发了），客户端还留着
+             * 「发不了」的旧状态 → 按钮一直灰着，界面在骗人。
+             *
+             * 服务端紧接着会推一份**全量**（`dm.state`），两边就对齐了。
+             */
+            dmRemaining: {},
             ...(identityChanged ? { room: null } : {}),
           });
           try {
@@ -604,6 +644,21 @@ class SocketManager {
               );
             }
           }
+          break;
+        }
+        case 'dm.state': {
+          /*
+           * 服务端告诉我「我还能给谁发几条私信」（互惠限流）。
+           *
+           * **服务端是唯一的事实来源** —— 客户端不自己数：
+           * 自己数出来的「锁定」一旦和服务端对不上，
+           * 表现就是「按钮一直灰着，怎么都发不出去」（界面在骗人）。
+           *
+           * 这是**增量**：合并进现有的表，不是整张替换。
+           */
+          const next = { ...this.state.dmRemaining };
+          for (const s of msg.states) next[s.peer] = s.remaining;
+          this.setState({ dmRemaining: next });
           break;
         }
         case 'toast':

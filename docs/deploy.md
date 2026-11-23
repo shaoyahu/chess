@@ -3,7 +3,10 @@
 > 面向「自己的云服务器 / VPS」这套环境。容器平台（Fly / Railway / ECS）也适用本文，
 > 只是把 systemd 那节换成容器里的进程管理。
 >
-> **Serverless（Vercel / Netlify）不适用** —— 原因见文末「已知限制」。
+> **Serverless（Vercel / Netlify）不适用** —— 原因见 §10.3 与 §16（2026-11-20 复核过
+> Vercel 最新规则，结论不变，且理由比当初更强）。
+>
+> **但可以拆开部署**：页面托管在 Vercel、实时服务留在自己的服务器 —— 见 §17。
 
 ---
 
@@ -227,6 +230,8 @@ sudo systemctl edit lan-chess        # 加 Environment=STOCKFISH_PATH=/usr/games
    当前是「自己和熟人用」的定位；真要放开到公网，至少在反代上加一层 Basic Auth。
 3. **不是 serverless 的料**：长连接 + 常驻进程 + Stockfish 子进程 + 20 秒级搜索，
    撞上函数时长限制和冷启动就会难用。要上 PaaS 得先拆成独立的 ws 服务。
+   （**2026-11-20 复核**：Vercel 的 WebSocket 已在 2026-10-20 GA，「长连接不支持」这条
+   已经不成立了 —— 但结论不变，理由换成 §16 里的 300 秒硬顶 + 内存态状态 + 落盘不成立。）
 4. **「局域网」的措辞会不准**：启动横幅和 `npm run lan` 打的是内网 IP，云上应该是公网地址。
    只是文案层面的事，不影响功能。
 
@@ -425,3 +430,182 @@ location / {
 2. **证书「续签 cron 存在」不等于「续签在跑」** —— 要去翻 acme.sh 的日志确认，
    并真的从外部 HTTP 打一次 challenge 路径。
 3. **备份软链要用 `cp -aL`** —— 否则你以为有备份，真出事时发现它跟着源文件一起被改了。
+
+---
+
+## 16. 能不能直接上 Vercel 免费版做公网对战？（2026-11-20 核查）
+
+> 结论：**Next.js 这一半可以，实时对战这一半不行。** 想公网玩，得把两半拆开部署。
+
+### 16.1 Vercel 现状（查的是官方文档原文，不是二手博客）
+
+用 CLI 就能直接读官方文档：
+
+```bash
+npx vercel@latest docs search "websockets"     # 搜文档
+npx vercel@latest docs inspect <page>          # 打印某页 Markdown
+```
+
+也可以直接抓 `.md` 端点（免登录）：`https://vercel.com/docs/functions/websockets.md`。
+
+关键事实：
+
+| 事实 | 来源 |
+|---|---|
+| **WebSocket 已 GA**（2026-10-20），全套餐含 Hobby 可用，需开 Fluid compute | Vercel changelog / docs/functions/websockets |
+| Next.js **没有**内置 WS upgrade API，要用 `@vercel/functions` ≥ 3.10.0 的 `upgradeWebSocket()` 写在 Route Handler 里 | 同上，官方 Next.js 小节 |
+| **Hobby 函数时长：默认 300 秒 = 上限**，硬顶，Pro 才能到 800s | docs/functions/limitations |
+| 重连**不保证**落到同一个实例 | 官方原文：*not guaranteed to reach the same Vercel Function instance* |
+| Hobby：100GB 流量/月、100 万函数调用/月、2GB 内存、100 次部署/天 | docs/pricing |
+
+### 16.2 为什么这个项目上不去（按阻塞程度排序）
+
+1. **自定义服务器根本不会跑。** Vercel 对 Next.js 项目用自己的 serverless 适配器，
+   `start` 脚本被忽略。`server.ts` 里那套 `server.on('upgrade')` + `ws` 的
+   `WebSocketServer({ noServer: true })` 完全用不上，必须改写成 Route Handler +
+   `upgradeWebSocket()`，而 `WsHub` 现在吃的是 `ws` 的 `WebSocket` 类型 —— 要加一层适配。
+2. **300 秒硬顶会把长对局掐断。** 时限档位有 `5+0 / 10+0 / 15+10 / 30+0`（默认 `10+0`），
+   一局必然超过 5 分钟。官方写明连接在函数达到最大时长时关闭 —— 免费版就是**每 5 分钟断一次**。
+3. **重连可能落到别的实例 → 房间直接没了。** 房间表 / 连接表 / 会话表 / 匹配队列
+   全在进程内存（见 §11 那张表）。落到别的实例 = 「房间不存在」、座位丢失、身份变新人。
+   项目里有重连逻辑（`verify:reconnect`），但它救不了「状态在别人进程里」。
+4. **落盘不成立。** Vercel 文件系统除 `/tmp` 外只读、实例间不共享、随实例回收。
+   `.data/rooms.json` + `sessions.json` 承诺的「重启不丢对局」「重连还认得回你」两件事都没了。
+5. **Stockfish 子进程不划算。** `engine-pool.ts` 懒启动 spawn 子进程（最多 `min(4, cpus-1)` 个）。
+   函数里能 spawn，但每次冷启动都要重启引擎池；Hobby 只有 4 CPU-hours/月 Active CPU，
+   而**连接开着就一直按实例存活时长计内存费**（不是按消息量）。
+6. **零鉴权。** `hello` 给个名字就算身份，地址一旦公开谁都能建房、开局、发私信。
+   公网暴露前至少要垫一层 Basic Auth（§12）。
+
+### 16.3 能干净上 Vercel 的部分
+
+5 个页面**全是 `'use client'`**，没有任何 route handler / API 路由 / 服务端数据获取：
+
+```
+/            ○  静态      /pieces    ○  静态      /practice  ○  静态
+/pieces3d    ○  静态      /room/[code]  ƒ  按需渲染（无 generateStaticParams）
+```
+
+实测 `next build` 通过（7/7 静态页生成成功）。也就是说 **纯 UI 部分（棋盘、3D 棋子、
+教学、练习）可以零函数成本托管在 Vercel Hobby 上**，只有 `/room/[code]` 会产生函数调用
+（Hobby 有 100 万次/月，够用）。
+
+### 16.4 三条可行路线
+
+| 路线 | 改动 | 评价 |
+|---|---|---|
+| **A. 拆分：前端 Vercel + WS 服务留 VPS** | `useSocket.ts:418` 的 `window.location.host` 改成读 `NEXT_PUBLIC_WS_URL` | 改动最小。跨源 WS 不受同源策略限制，且 `ws-hub.ts` 里**没有** Origin 校验，跨源能连。WS 服务仍按本文 §1–§13 部署（要 WSS） |
+| **B. 全部留在自己的 VPS** | 零代码改动 | 最省事。本文 §1–§13 就是为此写的。注意 §2 的警告：**别在共享生产机上构建** |
+| **C. 真要全上 Vercel** | Route Handler + `upgradeWebSocket()` + 状态外置 Redis/KV + 存档外置 + 引擎另找方案 + 断线重连协议 | 工作量 ≈ 重写 `room-manager` + `ws-hub` 的状态层（§11 已估过）。**且 300 秒上限还在** —— 免费版仍每 5 分钟断一次，要「免费 + 长对局不中断」在 Vercel 上做不到 |
+
+**给「自己和熟人玩」的建议是 A 或 B**，不要碰 C。
+
+---
+
+## 17. 混合部署：页面在 Vercel + 实时服务在自己的服务器（2026-11-23）
+
+> §16 说「不能全上 Vercel」，但**可以拆开上** —— 这就是路线 A 的完整落地。
+> 关键收益：**服务器上不用构建 Next.js**，于是那台 1586MB 的机器彻底躲开了
+> 「构建把整机拖下水」这个坑（§2 的警告框）。
+
+### 17.1 架构
+
+```
+浏览器 ──── https://<app>.vercel.app ────▶ Vercel（页面，全静态，零函数成本）
+  │
+  └──── wss://<你的域名>/ws ────▶ nginx :443（TLS 终止）
+                                    │
+                                    └─▶ 127.0.0.1:3000  server-ws.ts（只跑 WS）
+                                          ├─ 房间/匹配/会话：进程内存
+                                          ├─ 存档：.data/rooms.json + sessions.json
+                                          └─ AI：Stockfish 子进程
+```
+
+**跨源没问题**：浏览器对 WebSocket 不适用同源策略，服务端也没做 Origin 校验
+（已核对 `src/server/ws-hub.ts`）。但公网开放前建议在 nginx 加一条 Origin 白名单
+（`deploy/nginx-hybrid.conf.example` 末尾有现成的写法）。
+
+### 17.2 代码侧的改动（已落地）
+
+| 文件 | 改动 |
+|---|---|
+| `src/lib/ws-url.ts` | 新增。算 WS 地址：配了 `NEXT_PUBLIC_WS_URL` 就连它，否则退回同源 |
+| `src/hooks/useSocket.ts` | 用 `resolveWsUrl()` 取代写死的 `window.location.host` |
+| `server-ws.ts` | 新增入口。**只跑 WebSocket，不加载 Next.js** |
+| `scripts/verify-ws-only.ts` | 新增门禁，守的就是这条部署路径 |
+| `tests/ws-url.test.ts` | 地址解析的单测 |
+| `package.json` | 加 `start:ws` / `verify:ws-only` 脚本；加 `engines.node=22.x` |
+
+⚠️ **`NEXT_PUBLIC_WS_URL` 必须写成静态成员访问**（`process.env.NEXT_PUBLIC_WS_URL`）——
+Next.js 只对这种写法做构建期内联。写成 `process.env[key]` 或先解构再取值，
+浏览器里拿到的是 undefined，**静默退回同源**，表现是「页面在 Vercel，
+但连的还是 vercel.app/ws」。
+
+### 17.3 Vercel 侧
+
+```bash
+npm i -g vercel          # 已经有 66.6.0
+vercel login             # 或用 VERCEL_TOKEN
+vercel --prod
+```
+
+**部署前必须在项目设置里配好环境变量**（或 `vercel env add NEXT_PUBLIC_WS_URL production`）：
+
+```
+NEXT_PUBLIC_WS_URL = wss://<你的域名>/ws
+```
+
+- 这是**构建期**变量：改完要**重新部署**才生效（不是运行时读）。
+- Hobby 是个人/非商用用途 —— 自己玩没问题；一旦拿来盈利要升 Pro。
+- 5 个页面全是 `'use client'`，没有 route handler → Vercel 上**几乎不产生函数调用**，
+  只有 `/room/[code]` 按需渲染会算。
+
+### 17.4 服务器侧（不用构建！）
+
+```bash
+# 1. 拉代码（仓库是公开的，直接 clone）
+sudo git clone --depth 1 https://github.com/shaoyahu/chess.git /opt/lan-chess
+sudo chown -R lan-chess:lan-chess /opt/lan-chess
+cd /opt/lan-chess
+
+# 2. 装依赖 —— 注意**没有 build 这一步**
+sudo -u lan-chess npm ci --omit=dev
+
+# 3. systemd 单元（用 WS-only 那个）
+sudo cp deploy/lan-chess-ws.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now lan-chess-ws
+
+# 4. nginx：加 location /ws（见 deploy/nginx-hybrid.conf.example）
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**为什么不用传 `.next`**：WS-only 入口不加载 Next.js，服务器上根本不需要构建产物。
+这既是省事，也是**安全**——§2 那个「构建把 1586MB 的机器打到僵死」的坑直接绕开了。
+
+⚠️ 服务器上跑的是 **GitHub 上的 main**。本地没提交的改动不会上去。
+
+### 17.5 自检
+
+```bash
+# 本地：门禁（起一个隔离端口 + 隔离存档目录的 WS-only 服务）
+npm run verify:ws-only
+
+# 服务器上
+curl -s http://127.0.0.1:3000/healthz          # {"ok":true,"mode":"ws-only"}
+systemctl status lan-chess-ws
+journalctl -u lan-chess-ws -n 50 --no-pager
+
+# 端到端：浏览器打开 Vercel 页面 → 建房 → 换个浏览器/无痕窗口加入 →
+#          两边走子同步 → 看状态行和棋钟是不是同时在动
+```
+
+### 17.6 这条路的已知代价
+
+1. **两处部署、两处运维**：Vercel 一次 push 一遍，服务器一次 `git pull` + 重启。
+2. **服务器上仍是单实例**：内存态房间/匹配 —— 想扛几百人才需要上 Redis（§11）。
+3. **内存要算一下**：这台机器上还有别的服务，Stockfish 是主要消耗。
+   建议装**原生** Stockfish（同哈希更省内存），并把引擎实例数压到 1
+   （`engine-pool.ts` 按核数推算：2 核机器本来就只开 1 个）。
+4. **零鉴权**：公网开放前至少加 nginx 的 Origin 白名单（§17.1 末尾）。
+
+

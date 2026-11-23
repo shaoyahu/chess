@@ -1,0 +1,89 @@
+# 局域网国际象棋 —— **混合部署**的 nginx 反向代理片段
+#
+# 用途：页面在 Vercel，这台机器只提供 WebSocket。
+# 所以**不需要**新建 server 块 —— 在**已有**的域名 server 块里
+# 加一个 `location /ws` 就行（那个域名已经有 TLS 证书了）。
+#
+# 装法：把下面这段加到目标域名的 server 块（listen 443 ssl; 那个）里，然后
+#   nginx -t && systemctl reload nginx
+#
+# ⚠️ 三个地方必须配对，否则「页面能开、对局连不上」：
+#   ① Upgrade / Connection 头要透传；
+#   ② proxy_read_timeout 要放大 —— nginx 默认 60s 会把 WebSocket 掐掉，
+#      表现是「玩着玩着突然掉线重连」；
+#   ③ 代理目标要和 systemd 单元里的 PORT 对上（默认 3000）。
+#
+# ⚠️ 跨源这件事不用管：页面在 vercel.app、WS 在自己的域名 → 不同源。
+# 浏览器对 WebSocket **不适用**同源策略，服务端也没做 Origin 校验
+# （已核对过 src/server/ws-hub.ts），所以连得上。
+# 但下面**建议**加一条 Origin 白名单 —— 公网开放前最好加（见文末）。
+
+server {
+    listen 443 ssl;
+    server_name chess.example.com;   # 改这里：你要用的域名
+
+    ssl_certificate     /etc/nginx/ssl/chess.example.com.fullchain.cer;
+    ssl_certificate_key /etc/nginx/ssl/chess.example.com.key;
+
+    # ---- WebSocket：必须单独一段 ----
+    location /ws {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 长连接：默认 60s 会断
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    # ---- 健康检查（给部署自检 / 监控用）----
+    location = /healthz {
+        proxy_pass http://127.0.0.1:3000/healthz;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        access_log off;
+    }
+
+    # ---- 其余路径：一律 404 ----
+    # 页面在 Vercel，这台机器**不提供页面**。写清楚比让它落到某个默认页好：
+    # 万一有人把地址当成网站打开，立刻知道「走错地方了」。
+    location / {
+        return 404 "页面在 Vercel 上，这里只提供 WebSocket。\n";
+    }
+}
+
+# ------------------------------------------------------------------
+# 公网开放前的加分项：Origin 白名单
+# ------------------------------------------------------------------
+#
+# 这个项目**没有鉴权**：`hello` 只要给个名字就算身份，谁拿到地址都能
+# 建房、开局、给别人发私信。放到公网前建议至少做一件事。
+#
+# 最省事的一层（在 nginx 里做，不用改代码）：
+#
+#   location /ws {
+#       ...
+#       # 只放行 Vercel 页面发起的连接
+#       if ($http_origin !~* "^https://[a-z0-9-]+\.vercel\.app$") {
+#           return 403;
+#       }
+#   }
+#
+# 注意 `if` 在 location 里是**可用的**（`return` 是 rewrite 阶段的最终指令），
+# 但别在这里放别的指令。
+#
+# 再稳一点的是给「页面域名」也放行（自建域名 + vercel.app 两个）：
+#
+#   if ($http_origin !~* "^(https://chess\.example\.com|https://[a-z0-9-]+\.vercel\.app)$") {
+#       return 403;
+#   }
+#
+# 真正的鉴权要改代码（`hello` 时校验 token / 口令），那是另一件事。

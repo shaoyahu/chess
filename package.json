@@ -7,6 +7,7 @@
     "dev": "tsx server.ts",
     "build": "next build",
     "start": "NODE_ENV=production tsx server.ts",
+    "start:ws": "NODE_ENV=production tsx server-ws.ts",
     "lan": "tsx scripts/print-lan.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -17,7 +18,7 @@
     "assets:pieces": "tsx --tsconfig tsconfig.scripts.json scripts/generate-pieces.ts",
     "preview:appearance": "tsx --tsconfig tsconfig.scripts.json scripts/preview-piece-appearance.ts",
     "assets:silhouette": "tsx scripts/dump-piece-silhouette.ts artifacts/silhouette 0 game",
-    "verify": "npm run typecheck && npm run test && npm run licenses && npm run contrast && npm run verify:engine && npm run verify:stockfish",
+    "verify": "npm run typecheck && npm run test && npm run licenses && npm run contrast && npm run verify:ws-only && npm run verify:engine && npm run verify:stockfish",
     "verify:lan": "tsx scripts/verify-lan.ts",
     "verify:3d": "tsx scripts/verify-3d-viewport.ts",
     "verify:arrow": "tsx scripts/verify-move-arrow.ts",
@@ -33,6 +34,7 @@
     "verify:practice": "tsx scripts/verify-practice.ts",
     "verify:lessons": "tsx scripts/verify-lesson-text.ts",
     "verify:color-draw": "tsx scripts/verify-color-draw.ts",
+    "verify:ws-only": "tsx scripts/verify-ws-only.ts",
     "verify:engine": "tsx scripts/verify-engine-tactics.ts",
     "verify:stockfish": "tsx scripts/verify-stockfish.ts",
     "solve:3d": "tsx scripts/solve-3d-camera.ts",
@@ -77,5 +79,8 @@
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   },
-  "license": "GPL-3.0"
+  "license": "GPL-3.0",
+  "engines": {
+    "node": "22.x"
+  }
 }

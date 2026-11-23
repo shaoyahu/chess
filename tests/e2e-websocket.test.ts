@@ -8,7 +8,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { WebSocket as WsClient } from 'ws';
 import { WsHub } from '@/server/ws-hub';
 import { parseClientMessage, type ServerMessage } from '@/lib/protocol';
-import { DISCONNECT_GRACE_MS, DM_SEND_MIN_INTERVAL_MS } from '@/lib/constants';
+import { DISCONNECT_GRACE_MS, DM_MAX_UNANSWERED, DM_SEND_MIN_INTERVAL_MS } from '@/lib/constants';
 import { Chess } from 'chess.js';
 import type { RoomState } from '@/lib/types';
 
@@ -857,6 +857,120 @@ describe('聊天与私信的规矩', () => {
     await new Promise((r) => setTimeout(r, DM_SEND_MIN_INTERVAL_MS + 100));
     alice.send({ t: 'dm.send', to: bob.userId, text: '马上到' });
     await bob.waitFor((m) => m.t === 'dm' && m.message.text === '马上到');
+
+    alice.close();
+    bob.close();
+  });
+
+  /**
+   * **私信的互惠限流**（用户 2026-11-20 提的）：
+   *
+   *   「当一个人发送 3 条私信后，另一个必须发送私信后第一个人才能继续发送私信，
+   *     其中另一个发送私信和第一个人继续发送私信同样需要遵守 3 条数量限制。」
+   *
+   * 也就是：**能不能继续说，取决于对方有没有理我**。
+   * 一问一答能正常聊；单方面刷屏聊不下去。
+   */
+  it('私信有互惠限流：连发 3 条后必须等对方回一条才能再发', async () => {
+    const alice = new TestClient();
+    const bob = new TestClient();
+    await Promise.all([alice.connect(), bob.connect()]);
+    await Promise.all([alice.hello('A'), bob.hello('B')]);
+
+    /* 连发 3 条 —— 每条之间要过「最小发送间隔」那个桶 */
+    for (const t of ['来一盘？', '马上到', '缺个对手']) {
+      alice.send({ t: 'dm.send', to: bob.userId, text: t });
+      await bob.waitFor((m) => m.t === 'dm' && m.message.text === t);
+      await new Promise((r) => setTimeout(r, DM_SEND_MIN_INTERVAL_MS + 100));
+    }
+
+    /* 第 4 条：对方还没回消息 → **服务端拒收** */
+    alice.send({ t: 'dm.send', to: bob.userId, text: '下次一定' });
+    const toast = await alice.waitFor(
+      (m) => m.t === 'toast' && m.kind === 'error' && m.message.includes('还没回'),
+    );
+    expect(toast.t).toBe('toast');
+
+    /* 对方**只**收到 3 条（被拒的那条根本没发出去） */
+    await new Promise((r) => setTimeout(r, 200));
+    expect(bob.messages.filter((m) => m.t === 'dm').length).toBe(DM_MAX_UNANSWERED);
+
+    /* 对方回一条 → 额度重置，Alice 又能发了 */
+    await new Promise((r) => setTimeout(r, DM_SEND_MIN_INTERVAL_MS + 100));
+    bob.send({ t: 'dm.send', to: alice.userId, text: '来一盘？' });
+    await alice.waitFor((m) => m.t === 'dm' && m.message.text === '来一盘？');
+    await new Promise((r) => setTimeout(r, DM_SEND_MIN_INTERVAL_MS + 100));
+    alice.send({ t: 'dm.send', to: bob.userId, text: '马上到' });
+    await bob.waitFor((m) => m.t === 'dm' && m.message.text === '马上到');
+
+    alice.close();
+    bob.close();
+  });
+
+  it('互惠限流对双方一视同仁：对方连发 3 条之后同样发不出第 4 条', async () => {
+    const alice = new TestClient();
+    const bob = new TestClient();
+    await Promise.all([alice.connect(), bob.connect()]);
+    await Promise.all([alice.hello('A'), bob.hello('B')]);
+
+    for (const t of ['来一盘？', '马上到', '缺个对手']) {
+      bob.send({ t: 'dm.send', to: alice.userId, text: t });
+      await alice.waitFor((m) => m.t === 'dm' && m.message.text === t);
+      await new Promise((r) => setTimeout(r, DM_SEND_MIN_INTERVAL_MS + 100));
+    }
+
+    /* Bob 的第 4 条同样被拒 —— 规则不偏向任何一边 */
+    bob.send({ t: 'dm.send', to: alice.userId, text: '下次一定' });
+    const toast = await bob.waitFor(
+      (m) => m.t === 'toast' && m.kind === 'error' && m.message.includes('还没回'),
+    );
+    expect(toast.t).toBe('toast');
+    await new Promise((r) => setTimeout(r, 200));
+    expect(alice.messages.filter((m) => m.t === 'dm').length).toBe(DM_MAX_UNANSWERED);
+
+    alice.close();
+    bob.close();
+  });
+
+  it('私信额度会推给客户端：remaining 从满一路降到 0，对方回话后回到满', async () => {
+    const alice = new TestClient();
+    const bob = new TestClient();
+    await Promise.all([alice.connect(), bob.connect()]);
+    await Promise.all([alice.hello('A'), bob.hello('B')]);
+
+    /** 客户端收到的最新一条额度状态里，Alice 对 Bob 还剩几条 */
+    const remainingFor = (c: TestClient, peer: string): number => {
+      const list = c.messages.filter((m) => m.t === 'dm.state');
+      const last = list[list.length - 1];
+      if (!last || last.t !== 'dm.state') throw new Error('没收到 dm.state');
+      const hit = last.states.find((s) => s.peer === peer);
+      return hit ? hit.remaining : DM_MAX_UNANSWERED;
+    };
+
+    /* 发一条 → 额度从满（3）降到 2 */
+    alice.send({ t: 'dm.send', to: bob.userId, text: '来一盘？' });
+    await alice.waitFor(
+      (m) => m.t === 'dm.state' && m.states.some((s) => s.peer === bob.userId && s.remaining === 2),
+    );
+    expect(remainingFor(alice, bob.userId!)).toBe(2);
+
+    /* 再发两条 → 降到 0（被锁住） */
+    for (const t of ['马上到', '缺个对手']) {
+      await new Promise((r) => setTimeout(r, DM_SEND_MIN_INTERVAL_MS + 100));
+      alice.send({ t: 'dm.send', to: bob.userId, text: t });
+    }
+    await alice.waitFor(
+      (m) => m.t === 'dm.state' && m.states.some((s) => s.peer === bob.userId && s.remaining === 0),
+    );
+    expect(remainingFor(alice, bob.userId!)).toBe(0);
+
+    /* 对方回一条 → 我的额度回到满 */
+    await new Promise((r) => setTimeout(r, DM_SEND_MIN_INTERVAL_MS + 100));
+    bob.send({ t: 'dm.send', to: alice.userId, text: '来一盘？' });
+    await alice.waitFor(
+      (m) => m.t === 'dm.state' && m.states.some((s) => s.peer === bob.userId && s.remaining === 3),
+    );
+    expect(remainingFor(alice, bob.userId!)).toBe(3);
 
     alice.close();
     bob.close();
