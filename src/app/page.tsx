@@ -88,7 +88,8 @@ const VISIBILITY_OPTIONS: PickerOption<RoomVisibility>[] = [
 ];
 
 export default function LobbyPage() {
-  const { session, lobby, room, connected, send, joinRoom, login, pushToast, dmUnread } = useSocket();
+  const { session, lobby, room, connected, status, send, joinRoom, login, pushToast, dmUnread } =
+    useSocket();
   const { settings, uiPrefs, updateSettings, updateUiPrefs } = useSettings();
   const queued = Boolean(session && lobby.queuedUserIds.includes(session.userId));
   const router = useRouter();
@@ -153,6 +154,19 @@ export default function LobbyPage() {
     if (!name.trim()) {
       pushToast('error', '请输入用户名');
       return;
+    }
+    /*
+     * **服务器连不上时，点了必须给反馈。**
+     *
+     * 原症状（2026-11-27，服务器僵死）：点「进入大厅」毫无反应 ——
+     * 因为浏览器把 socket 永远挂在 CONNECTING，登录逻辑在等 onopen，
+     * 于是这一次点击**什么都没有发生**，玩家只能反复点、以为是自己坏了。
+     *
+     * 现在：身份照样记下（服务器一恢复就自动进大厅，不用再点一次），
+     * 同时明确告诉玩家「连不上服务器」—— 这是**状态**，不是解释文字。
+     */
+    if (status === 'failed') {
+      pushToast('error', '连不上服务器，正在重连');
     }
     login(name);
   };
@@ -263,6 +277,7 @@ export default function LobbyPage() {
           */}
           <OnlineUsersMenu
             connected={connected}
+            status={status}
             online={lobby.online}
             users={lobby.onlineUsers}
             selfId={session?.userId}

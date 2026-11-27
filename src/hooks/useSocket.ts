@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ServerMessage } from '@/lib/protocol';
-import type { Color, DirectMessage, LobbyState, RoomState } from '@/lib/types';
+import type { Color, ConnectionStatus, DirectMessage, LobbyState, RoomState } from '@/lib/types';
 import {
   CLIENT_HEARTBEAT_INTERVAL_MS,
   CLIENT_HEARTBEAT_TIMEOUT_MS,
@@ -55,11 +55,27 @@ export interface Toast {
   version: number;
 }
 
+/**
+ * **连接状态 —— 三态，不是一个 bool。**
+ *
+ * 定义放在 `@/lib/types`（组件和 hook 共用），这里再导出一次是为了
+ * 让「只想拿连接状态」的调用方有个就近的入口。
+ */
+export type { ConnectionStatus };
+
 export interface SocketState {
   session: Session | null;
   lobby: LobbyState;
   room: RoomView | null;
   connected: boolean;
+  /**
+   * **连接状态**（三态）。
+   *
+   * `connected` 是它的快捷写法（`status === 'open'`），
+   * 保留是为了不改动所有已有调用点 —— 但**只判断「连没连上」的界面应该改用 `status`**，
+   * 否则「正在连」和「连不上」又混成一种显示。
+   */
+  status: ConnectionStatus;
   toasts: Toast[];
   /** 私信记录（按时间序，双方各存自己收到/发出的那些） */
   dms: DirectMessage[];
@@ -208,12 +224,46 @@ function saveDmStore(userId: string, dms: DirectMessage[], unread: number): void
   }
 }
 
+/**
+ * **连接超时**：多久还连不上，就判定这次尝试失败（毫秒）。
+ *
+ * 为什么必须有 —— **服务器僵死时的真实形态**：
+ *   TCP 握手**会成功**（内核还在应答 SYN，所以 `nc -z` 看着是通的），
+ *   但 TLS / WebSocket 握手**永远不会完成**（用户态拿不到 CPU）。
+ *   浏览器于是把这个 socket 一直挂在 CONNECTING，既不 open 也不 error。
+ *
+ *   不主动掐掉，两个后果：
+ *   ① 界面永远显示「连接中…」—— 玩家以为是自己卡了；
+ *   ② 这个半开的连接会一直堆在服务端的 accept backlog 里（每个几十 KB），
+ *      而重试又会再堆一批 —— **客户端自己给服务器加压**。
+ *
+ *   所以超时既让界面说实话，也把这堆半开连接放掉。
+ */
+const CONNECT_TIMEOUT_MS = 10_000;
+
+/** 重连退避：起始间隔 */
+const RECONNECT_BASE_MS = 1_500;
+/** 重连退避：上限（再久玩家会以为页面坏了） */
+const RECONNECT_MAX_MS = 30_000;
+
 /** 全局连接管理器（模块级单例） */
 class SocketManager {
   private socket: WebSocket | null = null;
   private listeners = new Set<() => void>();
   private msgListeners = new Set<(msg: ServerMessage) => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 连接超时定时器（掐掉卡在 CONNECTING 的 socket） */
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * **重连退避**：连续失败越多，等得越久（上限 `RECONNECT_MAX_MS`）。
+   *
+   * 为什么要有退避：
+   *   服务器挂掉时，每个还开着的标签页都会 1.5 秒重连一次 ——
+   *   服务器一恢复就是一波连接风暴（而它恰好是最虚弱的时候）。
+   *   退避把重试摊开：1.5s → 3s → 6s → 12s → 24s → 30s（封顶）。
+   *   一旦连上就立刻复位（网络恢复时不该让人等）。
+   */
+  private reconnectDelayMs = RECONNECT_BASE_MS;
   private shouldReconnect = true;
   private identity: { name: string; token?: string } | null = null;
   private toastId = 0;
@@ -305,7 +355,7 @@ class SocketManager {
      * 这条 `setState` 不能省：换连接的那几秒里，
      * 顶栏必须显示「重连中…」，人就知道「是我这边断了，正在自己接回来」。
      */
-    this.setState({ connected: false });
+    this.setState({ connected: false, status: 'connecting' });
     try {
       socket.close();
     } catch {
@@ -330,6 +380,7 @@ class SocketManager {
     lobby: { rooms: [], queueSize: 0, online: 0, onlineUsers: [], queuedUserIds: [] },
     room: null,
     connected: false,
+    status: 'connecting',
     toasts: [],
     dms: [],
     dmUnread: 0,
@@ -448,8 +499,44 @@ class SocketManager {
     );
     this.socket = socket;
 
+    /*
+     * 状态先说「正在连」。
+     * 之前这里什么都不设，于是「连不上」和「正在连」都显示成同一句「连接中…」——
+     * 服务器僵死时那个提示会一直挂到天荒地老。
+     *
+     * 但**已经判定「连不上」就别再退回「正在连」**：
+     * 重试是内部细节，玩家只需要知道「现在连不上」这一件事。
+     * 来回闪的话，状态灯每隔十几秒变一次色，读起来像在装。
+     */
+    if (this.state.status !== 'failed') {
+      this.setState({ connected: false, status: 'connecting' });
+    }
+
+    /*
+     * **连接超时**：掐掉卡在 CONNECTING 的 socket。
+     *
+     * 服务器僵死时的形态就是「TCP 握上了、TLS 握手永远不完成」——
+     * 浏览器既不 open 也不 error，socket 就一直挂在 CONNECTING。
+     * 这里到点就把它关掉：界面从「连接中…」变成「无法连接」，
+     * 同时把这条半开连接从服务端的 backlog 里放掉。
+     */
+    this.clearConnectTimeout();
+    this.connectTimer = setTimeout(() => {
+      if (this.socket !== socket) return;
+      this.setState({ connected: false, status: 'failed' });
+      try {
+        socket.close();
+      } catch {
+        /* ignore */
+      }
+    }, CONNECT_TIMEOUT_MS);
+    if (typeof this.connectTimer.unref === 'function') this.connectTimer.unref();
+
     socket.onopen = () => {
-      this.setState({ connected: true });
+      this.clearConnectTimeout();
+      this.setState({ connected: true, status: 'open' });
+      // 连上了 → 退避复位（网络恢复时不该让人等）
+      this.reconnectDelayMs = RECONNECT_BASE_MS;
       this.lastPongAt = Date.now();
       this.startHeartbeat();
       // 恢复身份：优先用本次会话内的 identity；
@@ -675,16 +762,48 @@ class SocketManager {
       // 否则旧 socket 的 onclose（在新 socket 建好后才触发）会误发起一次重连，
       // 导致同一个标签页出现多条连接，服务端在线人数虚高。
       if (this.socket !== socket) return;
-      this.setState({ connected: false });
+      this.clearConnectTimeout();
+      /*
+       * 状态要说真话：
+       *  - 这次连接**曾经打开过**（正常掉线）→ 「正在重连」；
+       *  - 这次连接**从头到尾没打开过**（连不上）→ 「无法连接」。
+       */
+      const wasOpen = this.state.status === 'open';
+      this.setState({ connected: false, status: wasOpen ? 'connecting' : 'failed' });
       this.socket = null;
       this.stopHeartbeat();
       if (!this.shouldReconnect) return;
-      this.reconnectTimer = setTimeout(() => this.connect(), 1500);
+      this.scheduleReconnect();
     };
 
     socket.onerror = () => {
+      // 出错了 → 明确判成「连不上」，别再显示「连接中…」
+      this.setState({ connected: false, status: 'failed' });
       socket.close();
     };
+  }
+
+  /** 掐掉连接超时定时器 */
+  private clearConnectTimeout(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  /**
+   * **安排一次重连**（带退避）。
+   *
+   * 退避的意义：服务器挂掉时，每个还开着的标签页都在不停重连 ——
+   * 服务器刚好是最虚弱的时候，却要接这一波波连接。
+   * 间隔 1.5s → 3s → 6s → 12s → 24s → 30s（封顶），连上就复位。
+   */
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    const delay = this.reconnectDelayMs;
+    this.reconnectDelayMs = Math.min(RECONNECT_MAX_MS, Math.round(delay * 2));
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
   /**
@@ -761,6 +880,14 @@ class SocketManager {
     this.identity = { name: clean, token };
     const socket = this.socket;
     if (!socket || socket.readyState > 1) {
+      /*
+       * 用户点了「进入大厅」而服务器连不上 → **立刻再试一次**，
+       * 别让玩家对着退避计时干等（退避是为了省服务器，不是为了惩罚玩家）。
+       */
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
       this.connect();
       return;
     }
@@ -803,6 +930,7 @@ class SocketManager {
   dispose(): void {
     this.shouldReconnect = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.clearConnectTimeout();
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;

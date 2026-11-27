@@ -215,6 +215,7 @@ export default function RoomPage() {
     lobby,
     room,
     connected,
+    status,
     send,
     subscribe,
     joinRoom,
@@ -1600,6 +1601,7 @@ export default function RoomPage() {
           */}
           <OnlineUsersMenu
             connected={connected}
+            status={status}
             online={lobby.online}
             users={lobby.onlineUsers}
             selfId={session?.userId}

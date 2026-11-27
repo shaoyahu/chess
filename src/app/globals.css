@@ -297,6 +297,24 @@ button {
   box-shadow: 0 0 0 3px rgba(15, 111, 92, 0.16);
 }
 
+/*
+ * 「正在连」= 琥珀色，「无法连接」= 朱砂色。
+ *
+ * 为什么要分开两色：原来只有一个 `connected`，
+ * 于是「正在连」和「连不上」共用同一个红点 + 同一句「连接中…」——
+ * 服务器挂掉时那个提示会一直挂到天荒地老，玩家以为是自己卡了。
+ * 现在三个状态一眼可辨：绿=连上了，琥珀=在等，朱砂=等不到。
+ */
+.status-dot.connecting i {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(217, 147, 13, 0.16);
+}
+
+.status-dot.failed i {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(180, 52, 31, 0.16);
+}
+
 /* ---------- 卡片 / 面板 ---------- */
 
 .card {

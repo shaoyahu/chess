@@ -25,6 +25,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
+import type { ConnectionStatus } from '@/lib/types';
 import type { DmPeer } from './DirectMessagePanel';
 
 export interface OnlineUser {
@@ -35,6 +36,13 @@ export interface OnlineUser {
 interface OnlineUsersMenuProps {
   /** 连上了没有 */
   connected: boolean;
+  /**
+   * **连接状态**（三态）。不传就按 `connected` 推（老调用方兼容）。
+   *
+   * 为什么要三态：「正在连」和「连不上」必须能分开显示 ——
+   * 服务器僵死时只显示「连接中…」的话，玩家会一直等一个不会来的连接。
+   */
+  status?: ConnectionStatus;
   /** 在线人数（**必须等于 users.length** —— 服务端同源计算，不是两处各算一遍） */
   online: number;
   /** 在线的人 */
@@ -49,12 +57,22 @@ interface OnlineUsersMenuProps {
 
 export function OnlineUsersMenu({
   connected,
+  status,
   online,
   users,
   selfId,
   onMessage,
   offlineLabel = '连接中…',
 }: OnlineUsersMenuProps): React.ReactElement {
+  /** 连接状态（没传就按 connected 推） */
+  const conn: ConnectionStatus = status ?? (connected ? 'open' : 'connecting');
+  /**
+   * **按钮上的字 = 当前连接状态**。
+   *
+   * 「无法连接」是一个**状态**，不是解释性说明 —— 玩家看一眼就知道
+   * 「不是我这边坏了，是服务器没反应」，不用再去猜。
+   */
+  const label = conn === 'open' ? `在线 ${online}` : conn === 'failed' ? '无法连接' : offlineLabel;
   /** 「在线 N」这个浮层开着没有 */
   const [open, setOpen] = useState(false);
   /** 右键菜单（点谁、在哪） */
@@ -136,13 +154,13 @@ export function OnlineUsersMenu({
     <>
       <button
         ref={btnRef}
-        className={`status-dot ${connected ? 'online' : ''}`}
+        className={`status-dot ${conn === 'open' ? 'online' : conn}`}
         onClick={() => {
           setOpen((v) => !v);
           setCtxMenu(null);
         }}
         aria-expanded={open}
-        aria-label={connected ? `已连接，在线 ${online} 人` : offlineLabel}
+        aria-label={conn === 'open' ? `已连接，在线 ${online} 人` : label}
         title="在线的人"
       >
         <i />
@@ -150,7 +168,7 @@ export function OnlineUsersMenu({
           连上了就只写「在线 N」—— 那颗绿点**已经**表示「连着」，
           再写一遍「已连接」是重复；而且对局页顶栏窄，一多两个字就顶破。
         */}
-        {connected ? `在线 ${online}` : offlineLabel}
+        {label}
       </button>
 
       {open && (

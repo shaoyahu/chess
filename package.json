@@ -34,6 +34,7 @@
     "verify:replay": "tsx scripts/verify-replay.ts",
     "verify:practice": "tsx scripts/verify-practice.ts",
     "verify:endgame-puzzles": "tsx scripts/verify-endgame-puzzles.ts",
+    "verify:connection-state": "tsx scripts/verify-connection-state.ts",
     "verify:lessons": "tsx scripts/verify-lesson-text.ts",
     "verify:color-draw": "tsx scripts/verify-color-draw.ts",
     "verify:ws-only": "tsx scripts/verify-ws-only.ts",
@@ -55,6 +56,7 @@
     "mutate:lessons": "tsx scripts/mutate-lesson-text.ts",
     "mutate:practice": "tsx scripts/mutate-practice.ts",
     "mutate:endgame-puzzles": "tsx scripts/mutate-endgame-puzzles.ts",
+    "mutate:connection-state": "tsx scripts/mutate-connection-state.ts",
     "mutate:color-draw": "tsx scripts/mutate-color-draw.ts",
     "mutate:engine": "tsx scripts/mutate-engine-tactics.ts",
     "mutate:stockfish": "tsx scripts/mutate-stockfish.ts"

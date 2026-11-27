@@ -89,8 +89,12 @@ export class TestServer {
    * 起一个服务端，等它打出「已启动」。
    *
    * @param dataDir 存档目录（**必须**是临时的 —— 见文件头的说明）
+   * @param extraEnv 额外注入的环境变量（例如把页面指向一个「连不上的」WS 地址）
    */
-  static async start(dataDir: string): Promise<TestServer> {
+  static async start(
+    dataDir: string,
+    extraEnv: Record<string, string> = {},
+  ): Promise<TestServer> {
     const usePort = await freePort();
     const tsx = join(process.cwd(), 'node_modules', '.bin', 'tsx');
     const proc = spawn(tsx, ['server.ts'], {
@@ -103,6 +107,7 @@ export class TestServer {
         NODE_ENV: 'development',
         // 构建目录隔离 —— 见文件头说明 ①
         NEXT_DIST_DIR: process.env.NEXT_DIST_DIR ?? '.next-gate-invite',
+        ...extraEnv,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

@@ -4,6 +4,22 @@ import type { Orientation, TimeControlKey } from './constants';
 export type Color = 'w' | 'b';
 
 /**
+ * **与服务器的连接状态 —— 三态，不是一个 bool。**
+ *
+ * 为什么不能只有「连没连上」：
+ *   「正在连」和「连不上」是两回事，玩家要做的判断也不同 ——
+ *   前者等一下就好，后者得知道「服务器那边已经出问题了，再点也没用」。
+ *   只用一个 bool 的话这两种情况长得一模一样（都显示「连接中…」），
+ *   玩家只能盯着一个永远不变的提示 —— 界面在骗人。
+ *
+ * 实测出来的原症状（2026-11-27，服务器僵死时）：
+ *   右上角一直写「连接中…」，点「进入大厅」毫无反应 ——
+ *   因为浏览器把 socket 永远挂在 CONNECTING（TCP 握上了，TLS 握手没完成），
+ *   而登录逻辑在 CONNECTING 状态下**什么都不做**（在等 onopen 发 hello）。
+ */
+export type ConnectionStatus = 'connecting' | 'open' | 'failed';
+
+/**
  * 房间可见性。
  *
  * - `public`：出现在大厅房间列表里，别人可以直接点「加入」进来。
