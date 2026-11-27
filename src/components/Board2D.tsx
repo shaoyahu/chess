@@ -52,6 +52,13 @@ export interface Board2DProps {
    * 与「上一步的走子箭头」是两回事，所以单独一条。
    */
   hintMove?: { from: string; to: string } | null;
+  /**
+   * **走错的那一手**（起点 → 终点）—— 起止两格标红。
+   *
+   * 残局关卡用：走错了要**当场看得见**，
+   * 光在面板上写一句「这步不对」不够，得标在棋子上。
+   */
+  wrongMove?: { from: string; to: string } | null;
   /** 棋子风格（造型语言） */
   pieceStyle?: PieceStyle;
   /** 棋子材质（表面表现） */
@@ -67,6 +74,7 @@ export function Board2D({
   lastMove = null,
   theme,
   hintMove = null,
+  wrongMove = null,
   pieceStyle = 'classic',
   pieceMaterial = 'wood',
 }: Board2DProps) {
@@ -332,6 +340,7 @@ export function Board2D({
           // 原格在拖动时也高亮 —— 让人知道「是从这儿拿起来的」
           const isSelected = selected === square || dragFrom === square;
           const isLast = lastMove?.from === square || lastMove?.to === square;
+          const isWrong = wrongMove?.from === square || wrongMove?.to === square;
           const isChecked = checkedKing === square;
           const canClick = isMyTurn || Boolean(target);
 
@@ -344,6 +353,7 @@ export function Board2D({
                 isLight ? 'light' : 'dark',
                 canClick ? 'clickable' : '',
                 isLast ? 'lastmove' : '',
+                isWrong ? 'wrongmove' : '',
                 isChecked ? 'checked' : '',
                 isSelected ? 'selected' : '',
               ]

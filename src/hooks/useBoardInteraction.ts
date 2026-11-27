@@ -9,7 +9,7 @@
  *  - 升变：兵到底线时弹出选择（后/车/象/马）。
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { legalTargets, type LegalTarget } from '@/lib/chess-engine';
+import { legalTargets, pieceAt, type LegalTarget } from '@/lib/chess-engine';
 import { freeTargets } from '@/lib/replay';
 import type { Color, PieceType, RoomState } from '@/lib/types';
 
@@ -73,8 +73,11 @@ export interface UseBoardInteractionOptions {
    * 而且**双方棋子都能动** —— 不受「轮到谁走」的限制。
    *
    * 传 null = 正常对局，规则不变。
+   *
+   * `onlyColor` 限定「只有这一方的子能动」——
+   * 残局关卡用得到：玩家只走自己的子，对手那手由题库自动走掉。
    */
-  free?: { fen: string } | null;
+  free?: { fen: string; onlyColor?: Color } | null;
 }
 
 export function useBoardInteraction({
@@ -108,19 +111,39 @@ export function useBoardInteraction({
    * 复盘里没有「轮到谁走」这回事，所以直接给 true。
    */
   const freeFen = free?.fen ?? null;
+  /** 复盘模式下只允许这一方动子（残局关卡用；不限定就是双方都能动） */
+  const freeOnlyColor = free?.onlyColor ?? null;
   const isFree = freeFen !== null;
   const isMyTurn = isFree
     ? true
     : Boolean(myColor && turn === myColor && room?.status === 'playing');
 
+  /**
+   * 复盘模式下某一格的合法落点。
+   *
+   * `onlyColor` 存在时，**对方的子一律不能动**（落点直接给空）——
+   * 残局关卡里玩家只走自己的子，对手那手由题库自动走。
+   */
+  const freeTargetsOf = useCallback(
+    (square: string): LegalTarget[] => {
+      if (freeFen === null) return [];
+      const targets = freeTargets(freeFen, square);
+      if (!freeOnlyColor) return targets;
+      const piece = pieceAt(freeFen, square);
+      if (!piece || piece.color !== freeOnlyColor) return [];
+      return targets;
+    },
+    [freeFen, freeOnlyColor],
+  );
+
   /** 这一格的合法落点（复盘模式下**不区分是哪一方的子**） */
   const targetsOf = useCallback(
     (square: string): LegalTarget[] => {
-      if (freeFen !== null) return freeTargets(freeFen, square);
+      if (freeFen !== null) return freeTargetsOf(square);
       if (!room || !myColor || !isMyTurn) return [];
       return legalTargets(room.fen, square, myColor);
     },
-    [freeFen, room, myColor, isMyTurn],
+    [freeFen, freeOnlyColor, room, myColor, isMyTurn, freeTargetsOf],
   );
 
   const targets = useMemo(() => {
@@ -149,11 +172,11 @@ export function useBoardInteraction({
   /** 这一格能不能起拖 —— 规则跟「点选」完全一样：自己的子 + 至少有一个合法着 */
   const canDragFrom = useCallback(
     (square: string) => {
-      if (freeFen !== null) return freeTargets(freeFen, square).length > 0;
+      if (freeFen !== null) return freeTargetsOf(square).length > 0;
       if (!room || !myColor || !isMyTurn) return false;
       return legalTargets(room.fen, square, myColor).length > 0;
     },
-    [freeFen, room, myColor, isMyTurn],
+    [freeFen, freeTargetsOf, room, myColor, isMyTurn],
   );
 
   /** 开始拖动 */
@@ -215,7 +238,7 @@ export function useBoardInteraction({
           commitMove(selected, target);
           return;
         }
-        if (freeTargets(freeFen, square).length > 0) {
+        if (freeTargetsOf(square).length > 0) {
           setSelected((prev) => (prev === square ? null : square));
           return;
         }
@@ -242,7 +265,7 @@ export function useBoardInteraction({
       // 点空处 → 取消选择
       setSelected(null);
     },
-    [freeFen, room, myColor, isMyTurn, targetMap, selected, commitMove],
+    [freeFen, freeTargetsOf, room, myColor, isMyTurn, targetMap, selected, commitMove],
   );
 
   /** 确认升变棋子 */

@@ -17,11 +17,12 @@
  *  - **棋盘是唯一的裁判**：走法合法性、终局判定都交给 chess.js，
  *    页面不自己另立一套规则。
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   BookOpen,
   Castle,
+  Check,
   ChevronLeft,
   ChevronRight,
   Circle,
@@ -29,8 +30,10 @@ import {
   Eraser,
   FlipHorizontal2,
   Grid2x2,
+  Lightbulb,
   RotateCcw,
   Settings,
+  Star,
   Trash2,
 } from 'lucide-react';
 import { useSocket } from '@/hooks/useSocket';
@@ -74,9 +77,26 @@ import {
   standardPlacement,
   type Placement,
 } from '@/lib/practice/setup';
+import {
+  PUZZLES,
+  applyPlayerMove,
+  emptyProgress,
+  hintFor,
+  loadProgress,
+  markCurrent,
+  markSolved,
+  playerMoveCount,
+  saveProgress,
+  sessionPosition,
+  startSession,
+  themeLabel,
+  type Puzzle,
+  type PuzzleProgress,
+  type PuzzleSession,
+} from '@/lib/practice/puzzles';
 
-/** 两个分区 */
-type Tab = 'lesson' | 'free';
+/** 三个分区 */
+type Tab = 'lesson' | 'puzzle' | 'free';
 
 /** 自由练习的两个阶段 */
 type Phase = 'setup' | 'play';
@@ -114,6 +134,19 @@ const READ_ONLY_INTERACTION: BoardInteraction = {
   beginDrag: () => false,
   endDrag: () => {},
 };
+
+/**
+ * 关卡目标的中文文案。
+ *
+ * 这是**任务状态**，不是解释性文字 —— 玩家得知道这一关要达成什么。
+ */
+function puzzleGoalText(puzzle: Puzzle): string {
+  const side = puzzle.side === 'w' ? '白方' : '黑方';
+  if (puzzle.goal === 'mate') return `${side} ${puzzle.mateIn ?? 1} 手内将死`;
+  if (puzzle.goal === 'win') return `${side}取胜`;
+  if (puzzle.goal === 'draw') return `${side}守和`;
+  return `${side}升变取胜`;
+}
 
 /** 自由练习的终局文案：两个人都是玩家，所以只说「谁被将死」，不说谁赢 */
 function practiceResultText(fen: string): string | null {
@@ -196,6 +229,121 @@ export default function PracticePage() {
     // 换课就回到主线：上一课的线路 id 在新课程里多半不存在
     setLineId(null);
   }, []);
+
+  /* ---------------- 残局关卡 ---------------- */
+  /** 当前关卡 id */
+  const [puzzleId, setPuzzleId] = useState<string>(PUZZLES[0]?.id ?? '');
+  /** 当前这一局的解题状态（局面由它算出来，不单独存） */
+  const [session, setSession] = useState<PuzzleSession | null>(null);
+  /** 通关记录（从 localStorage 读，写进 localStorage） */
+  const [progress, setProgress] = useState<PuzzleProgress>(() => emptyProgress());
+  /** 关卡棋盘的视角（玩家执黑时默认翻转） */
+  const [puzzleFlipped, setPuzzleFlipped] = useState(false);
+  /** 提示箭头（点了「提示」才出现） */
+  const [hintMove, setHintMove] = useState<{ from: string; to: string } | null>(null);
+  /** 走错的那一手（棋盘上标红） */
+  const [wrongMove, setWrongMove] = useState<{ from: string; to: string } | null>(null);
+
+  // 存档在挂载后读 —— 服务端渲染时 localStorage 还没有
+  useEffect(() => {
+    const loaded = loadProgress();
+    setProgress(loaded);
+    const last = loaded.lastId ? PUZZLES.find((p) => p.id === loaded.lastId) : null;
+    const target = last ?? PUZZLES[0];
+    if (target) {
+      setPuzzleId(target.id);
+      setSession(startSession(target));
+      setPuzzleFlipped(target.side === 'b');
+    }
+  }, []);
+
+  /** 当前关卡 */
+  const puzzle = useMemo(
+    () => PUZZLES.find((p) => p.id === puzzleId) ?? PUZZLES[0] ?? null,
+    [puzzleId],
+  );
+  /** 棋盘该显示的局面 */
+  const puzzleFen = session ? sessionPosition(session) : '';
+  /** 上一步的箭头（对手那手自动走掉时也画） */
+  const lastPuzzleStep = session && session.ply > 0 ? session.puzzle.line[session.ply - 1] : null;
+  const lastPuzzleMove =
+    lastPuzzleStep && lastPuzzleStep.from && lastPuzzleStep.to
+      ? { from: lastPuzzleStep.from, to: lastPuzzleStep.to }
+      : null;
+
+  /** 换一关 */
+  const selectPuzzle = useCallback((id: string) => {
+    const target = PUZZLES.find((p) => p.id === id);
+    if (!target) return;
+    setPuzzleId(id);
+    setSession(startSession(target));
+    setPuzzleFlipped(target.side === 'b');
+    setHintMove(null);
+    setWrongMove(null);
+    setProgress((prev) => {
+      const next = markCurrent(prev, id);
+      saveProgress(next);
+      return next;
+    });
+  }, []);
+
+  /** 走子：走对了推进，走错了标红但不推进 */
+  const handlePuzzleMove = useCallback(
+    (from: string, to: string, promotion?: PieceType) => {
+      if (!session) return;
+      const result = applyFreeMove(puzzleFen, from, to, promotion);
+      if (!result) return;
+      const next = applyPlayerMove(session, result.step.san);
+      setWrongMove(next.ok ? null : { from, to });
+      setHintMove(null);
+      if (!next.ok) {
+        // 走错了：局面不动，只把错的着法记下来
+        setSession(next.session);
+        return;
+      }
+      setSession(next.session);
+      if (next.session.solved) {
+        setProgress((prev) => {
+          const updated = markSolved(prev, session.puzzle.id);
+          saveProgress(updated);
+          return updated;
+        });
+      }
+    },
+    [session, puzzleFen],
+  );
+
+  const puzzleInteraction = useBoardInteraction({
+    room: null,
+    myColor: session?.puzzle.side,
+    onMove: handlePuzzleMove,
+    // 只有玩家自己的子能动 —— 对手那手由题库自动走
+    free: session ? { fen: puzzleFen, onlyColor: session.puzzle.side } : null,
+  });
+
+  /** 提示：把该走的那一步高亮出来 */
+  const showPuzzleHint = useCallback(() => {
+    if (!session) return;
+    const step = hintFor(session);
+    if (!step) return;
+    setHintMove({ from: step.from, to: step.to });
+    setWrongMove(null);
+  }, [session]);
+
+  /** 重来：这一关从头开始 */
+  const resetPuzzle = useCallback(() => {
+    if (!session) return;
+    setSession(startSession(session.puzzle));
+    setHintMove(null);
+    setWrongMove(null);
+  }, [session]);
+
+  /** 下一关 */
+  const nextPuzzle = useCallback(() => {
+    const idx = PUZZLES.findIndex((p) => p.id === puzzleId);
+    const next = PUZZLES[idx + 1];
+    if (next) selectPuzzle(next.id);
+  }, [puzzleId, selectPuzzle]);
 
   /* ---------------- 自由练习 ---------------- */
   const [phase, setPhase] = useState<Phase>('setup');
@@ -379,6 +527,14 @@ export default function PracticePage() {
           >
             <BookOpen size={15} aria-hidden="true" />
             教学
+          </button>
+          <button
+            className={`btn${tab === 'puzzle' ? ' active' : ''}`}
+            onClick={() => setTab('puzzle')}
+            aria-pressed={tab === 'puzzle'}
+          >
+            <Grid2x2 size={15} aria-hidden="true" />
+            残局关卡
           </button>
           <button
             className={`btn${tab === 'free' ? ' active' : ''}`}
@@ -597,6 +753,190 @@ export default function PracticePage() {
                       <li key={point}>{point}</li>
                     ))}
                   </ul>
+                </>
+              )}
+            </div>
+          </div>
+        ) : tab === 'puzzle' ? (
+          /* ================= 残局关卡 ================= */
+          <div className="practice-grid tab-puzzle">
+            {/* 关卡列表 */}
+            <div className="card practice-col-left">
+              <div className="section-head">
+                <div className="section-title">
+                  <span className="eyebrow">Endgame</span>
+                  <span className="zh">残局关卡</span>
+                </div>
+                <span className="section-meta">
+                  {progress.solved.length} / {PUZZLES.length}
+                </span>
+              </div>
+              <div className="puzzle-list">
+                {PUZZLES.map((item, i) => (
+                  <button
+                    key={item.id}
+                    className={`puzzle-row${item.id === puzzleId ? ' active' : ''}`}
+                    onClick={() => selectPuzzle(item.id)}
+                    aria-pressed={item.id === puzzleId}
+                  >
+                    <span className="puzzle-row-no">{i + 1}</span>
+                    <span className="puzzle-row-main">
+                      <span className="puzzle-row-name">{themeLabel(item.theme)}</span>
+                      <span className="puzzle-row-goal">{puzzleGoalText(item)}</span>
+                    </span>
+                    <span
+                      className="puzzle-row-stars"
+                      aria-label={`难度 ${item.difficulty} / 5`}
+                      title={`难度 ${item.difficulty} / 5`}
+                    >
+                      {Array.from({ length: 5 }, (_, k) => (
+                        <Star
+                          key={k}
+                          size={11}
+                          fill={k < item.difficulty ? 'currentColor' : 'none'}
+                          aria-hidden="true"
+                        />
+                      ))}
+                    </span>
+                    {progress.solved.includes(item.id) && (
+                      <span className="puzzle-row-done">
+                        <Check size={13} aria-hidden="true" />
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 棋盘 */}
+            <div className="practice-col-board">
+              <div className="board-area practice-board-area">
+                <div className="board-panel">
+                  {session && (
+                    <>
+                      <Board2D
+                        fen={puzzleFen}
+                        interaction={puzzleInteraction}
+                        flipped={puzzleFlipped}
+                        lastMove={lastPuzzleMove}
+                        hintMove={hintMove}
+                        wrongMove={wrongMove}
+                        theme={boardTheme}
+                        pieceStyle={settings.pieceStyle}
+                        pieceMaterial={settings.pieceMaterial}
+                      />
+                      {puzzleInteraction.pendingPromotion && (
+                        <div className="overlay" onClick={puzzleInteraction.cancelPromotion}>
+                          <div className="promotion-box" onClick={(e) => e.stopPropagation()}>
+                            <p>兵升变为</p>
+                            <div className="promotion-options">
+                              {(['q', 'r', 'b', 'n'] as const).map((pp) => (
+                                <button key={pp} onClick={() => puzzleInteraction.choosePromotion(pp)}>
+                                  <PieceGlyph
+                                    type={pp}
+                                    color={
+                                      (pieceAt(puzzleFen, puzzleInteraction.pendingPromotion?.from ?? '')
+                                        ?.color ?? 'w') as Color
+                                    }
+                                    size={52}
+                                    style={settings.pieceStyle}
+                                    material={settings.pieceMaterial}
+                                  />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 状态与操作 */}
+            <div className="card practice-col-right">
+              {puzzle && session && (
+                <>
+                  <div className="section-head">
+                    <div className="section-title">
+                      <span className="eyebrow">
+                        Level {PUZZLES.findIndex((x) => x.id === puzzle.id) + 1}
+                      </span>
+                      <span className="zh">{themeLabel(puzzle.theme)}</span>
+                    </div>
+                    <span className="section-meta">{puzzle.en}</span>
+                  </div>
+
+                  <div className="practice-readout">
+                    <span className="practice-readout-label">目标</span>
+                    <span className="practice-readout-value">{puzzleGoalText(puzzle)}</span>
+                  </div>
+                  <div className="practice-readout">
+                    <span className="practice-readout-label">执子</span>
+                    <span className="practice-readout-value">
+                      {puzzle.side === 'w' ? '白方' : '黑方'}
+                    </span>
+                  </div>
+                  <div className="practice-readout">
+                    <span className="practice-readout-label">步数</span>
+                    <span className="practice-readout-value">
+                      {session.playerMoves.length} / {playerMoveCount(puzzle)}
+                    </span>
+                  </div>
+
+                  {/* 状态反馈：走错了 / 通关了 */}
+                  {session.lastWrong && !session.solved && (
+                    <div className="puzzle-status wrong" role="status">
+                      这一步不对
+                    </div>
+                  )}
+                  {session.solved && (
+                    <div className="puzzle-status done" role="status">
+                      通关
+                    </div>
+                  )}
+
+                  <div className="btn-row">
+                    <button
+                      className="btn small"
+                      onClick={showPuzzleHint}
+                      disabled={session.solved}
+                      title="提示"
+                    >
+                      <Lightbulb size={15} aria-hidden="true" />
+                      提示
+                    </button>
+                    <button className="btn small ghost" onClick={resetPuzzle} title="重来">
+                      <RotateCcw size={15} aria-hidden="true" />
+                      重来
+                    </button>
+                  </div>
+                  <div className="btn-row" style={{ marginTop: 'var(--sp-3)' }}>
+                    <button
+                      className="btn small ghost"
+                      onClick={() => setPuzzleFlipped((f) => !f)}
+                      title="翻转棋盘"
+                    >
+                      <FlipHorizontal2 size={15} aria-hidden="true" />
+                      翻转
+                    </button>
+                    {session.solved && (
+                      <button className="btn primary" onClick={nextPuzzle} style={{ flex: 1 }}>
+                        下一关
+                        <ChevronRight size={15} aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 通关后才显示的教学要点 —— 提前印出来就把题做完了 */}
+                  {session.solved && (
+                    <ul className="lesson-points">
+                      {puzzle.points.map((pt) => (
+                        <li key={pt}>{pt}</li>
+                      ))}
+                    </ul>
+                  )}
                 </>
               )}
             </div>

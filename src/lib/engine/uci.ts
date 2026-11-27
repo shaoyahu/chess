@@ -28,6 +28,19 @@ export interface UciBestMove {
   promotion?: 'q' | 'r' | 'b' | 'n';
   /** 引擎给出的分值（厘兵，走子方视角）；有 mate 时是 null */
   scoreCp: number | null;
+  /**
+   * 引擎给出的**杀棋距离**（走子方视角，单位：手）。
+   *
+   * UCI 规范：`score mate N` 里 N 是**手数**不是步数。
+   *   - N > 0：走子方 N 手内把对手将死（对手只能挡）；
+   *   - N < 0：走子方 N 手内被将死（对手在杀它）。
+   * 不是 mate 局面时是 null。
+   *
+   * 为什么必须留着它：残局关卡的核心信息就是「几步杀」，
+   * 而 `score cp` 在杀棋局面里是 null —— 只看厘兵分值，
+   * 「一步杀」和「十手杀」长得一模一样（都是 null）。
+   */
+  scoreMate: number | null;
   /** 引擎给出的着法深度 */
   depth: number;
   /** 引擎搜索过的节点数 */
@@ -109,6 +122,9 @@ export class UciEngine implements UciEngineLike {
     reject: (err: Error) => void;
     timer: NodeJS.Timeout;
     scoreCp: number | null;
+    scoreMate: number | null;
+    /** 带 bound 标记（upperbound/lowerbound）的杀棋距离 —— 只在没有精确值时兜底 */
+    scoreMateBound: number | null;
     depth: number;
     nodes: number;
     /** 是否已经因为「找到杀棋」发过 stop */
@@ -234,7 +250,7 @@ export class UciEngine implements UciEngineLike {
       }, hardTimeout);
       if (typeof timer.unref === 'function') timer.unref();
 
-      this.pending = { resolve, reject, timer, scoreCp: null, depth: 0, nodes: 0, mateStopped: false };
+      this.pending = { resolve, reject, timer, scoreCp: null, scoreMate: null, scoreMateBound: null, depth: 0, nodes: 0, mateStopped: false };
 
       this.write(`position fen ${opts.fen}`);
       // depth 与 movetime 可以**同时**给：引擎取先到的那个为准。
@@ -317,6 +333,15 @@ export class UciEngine implements UciEngineLike {
       if (info.scoreCp !== null) p.scoreCp = info.scoreCp;
       if (isMateInfoLine(t)) {
         p.scoreCp = null;
+        /*
+         * `score mate N` 带 upperbound/lowerbound 时，N 只是**搜索窗口的界**，
+         * 不是确切的杀棋距离（SF 找到杀棋后往往先报一个 bound）。
+         * 精确值单独存，界值只做兜底 —— 杀棋距离算错会把残局关卡分错档。
+         */
+        if (info.scoreMate !== null) {
+          if (isBoundedScoreLine(t)) p.scoreMateBound = info.scoreMate;
+          else p.scoreMate = info.scoreMate;
+        }
         // 找到杀棋就别再往下虚搜了：SF 确认 mate 之后会**一路加深**，
         // 把整个时间预算耗光（实测一步杀局面能搜到 depth 245），
         // 结果就是「早就知道怎么杀了，却还要让玩家再等两秒」。
@@ -351,6 +376,7 @@ export class UciEngine implements UciEngineLike {
         to: parsed.to,
         ...(parsed.promotion ? { promotion: parsed.promotion } : {}),
         scoreCp: p.scoreCp,
+        scoreMate: p.scoreMate ?? p.scoreMateBound,
         depth: p.depth,
         nodes: p.nodes,
       });
@@ -385,7 +411,21 @@ export function isMateInfoLine(line: string): boolean {
   return /\bscore mate\b/.test(line);
 }
 
-/** 一条 info 行里能解析出来的搜索信息 */
+/**
+ * 这一行 info 的分值是不是**带界**的（`upperbound` / `lowerbound`）。
+ *
+ * 为什么要在意：SF 找到杀棋后往往先报一条带界的
+ * `score mate N lowerbound` —— 那个 N 是**搜索窗口的界**，
+ * 不是确切的杀棋距离。后面跟的那条不带界的才是确切值。
+ *
+ * 杀棋距离算错的后果很实在：残局关卡会按「几步杀」分难度，
+ * 差一手就会把题分错档，所以精确值和界值必须分开存。
+ */
+export function isBoundedScoreLine(line: string): boolean {
+  return /\b(upperbound|lowerbound)\b/.test(line);
+}
+
+  /** 一条 info 行里能解析出来的搜索信息 */
 export interface UciSearchInfo {
   /** 搜索深度（不是 seldepth！） */
   depth: number | null;
@@ -393,6 +433,8 @@ export interface UciSearchInfo {
   nodes: number | null;
   /** 分值（厘兵，走子方视角）；mate 时为 null */
   scoreCp: number | null;
+  /** 杀棋距离（手，走子方视角）；不是 mate 局面时为 null */
+  scoreMate: number | null;
 }
 
 /**
@@ -407,7 +449,7 @@ export interface UciSearchInfo {
  */
 export function parseSearchInfo(line: string): UciSearchInfo {
   const t = line.trim();
-  const out: UciSearchInfo = { depth: null, nodes: null, scoreCp: null };
+  const out: UciSearchInfo = { depth: null, nodes: null, scoreCp: null, scoreMate: null };
   if (!t.startsWith('info ')) return out;
 
   // depth 前面必须是空白或行首，避免匹配到 seldepth
@@ -415,9 +457,11 @@ export function parseSearchInfo(line: string): UciSearchInfo {
   if (depth) out.depth = Number(depth[1]);
   const nodes = /\bnodes (\d+)/.exec(t);
   if (nodes) out.nodes = Number(nodes[1]);
-  if (/\bscore mate\b/.test(t)) {
+  const mate = /\bscore mate (-?\d+)/.exec(t);
+  if (mate) {
     // mate 分值不当作 cp 用
     out.scoreCp = null;
+    out.scoreMate = Number(mate[1]);
     return out;
   }
   const score = /\bscore cp (-?\d+)/.exec(t);

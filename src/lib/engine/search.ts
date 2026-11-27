@@ -1192,6 +1192,27 @@ const INF = 1_000_000;
 const MATE_SCORE = 100_000;
 const MATE_BOUND = 99_000;
 
+/**
+ * 从搜索分值里还原**杀棋距离**（单位：手，走子方视角）。
+ *
+ * 自研引擎把杀棋编码进分值里（`±MATE_SCORE ± ply`），
+ * UCI 引擎则直接给 `score mate N`（N 就是手数）——
+ * 两者在这里统一成同一个口径：**手数**。
+ *
+ * @returns > 0 = 走子方 N 手内将死；< 0 = 走子方 N 手内被将死；null = 不是杀棋局面
+ */
+export function mateDistanceFromScore(score: number): number | null {
+  if (score > MATE_BOUND) {
+    const plies = MATE_SCORE - score;
+    return plies > 0 ? Math.ceil(plies / 2) : null;
+  }
+  if (score < -MATE_BOUND) {
+    const plies = score + MATE_SCORE;
+    return plies > 0 ? -Math.ceil(plies / 2) : null;
+  }
+  return null;
+}
+
 const TT_EXACT = 0;
 const TT_LOWER = 1;
 const TT_UPPER = 2;

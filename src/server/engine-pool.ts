@@ -48,6 +48,8 @@ interface WorkerResponse {
   depth?: number;
   nodes?: number;
   score?: number;
+  /** 杀棋距离（手，走子方视角）；不是杀棋局面时是 null */
+  mateIn?: number | null;
   elapsedMs?: number;
   error?: string;
 }
@@ -336,6 +338,7 @@ export class EnginePool {
       depth: resp.depth ?? 0,
       nodes: resp.nodes ?? 0,
       score: resp.score ?? 0,
+      mateIn: resp.mateIn ?? null,
       elapsedMs: resp.elapsedMs ?? 0,
       timedOut: false,
     });

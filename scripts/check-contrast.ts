@@ -164,6 +164,20 @@ const EXPECT: Expect[] = [
   ['#fff8ec', 'var(--accent-hover)', 4.5, '主按钮文字 @ --accent-hover（hover）'],
   ['var(--text)', 'var(--bg-elevated)', 4.5, '普通按钮文字 @ 浅色面板'],
 
+  // —— 残局关卡（2026-11-27）——
+  [
+    'rule:.puzzle-status.wrong:color',
+    'rule:.puzzle-status.wrong:background',
+    4.5,
+    '关卡「走错了」状态文字/底色',
+  ],
+  [
+    'rule:.puzzle-status.done:color',
+    'rule:.puzzle-status.done:background',
+    4.5,
+    '关卡「通关」状态文字/底色',
+  ],
+
   // —— 规则里的真实取值（防止有人单独改一条规则）——
   ['rule:.btn.primary:color', 'rule:.btn.primary:background', 4.5, '.btn.primary 文字/底色'],
   [

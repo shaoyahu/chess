@@ -10,7 +10,7 @@
  */
 import { Chess, type Move } from 'chess.js';
 import type { Color } from '../types';
-import { searchPosition, type SearchOutcome } from './search';
+import { searchPosition, mateDistanceFromScore, type SearchOutcome } from './search';
 import {
   DEFAULT_TIME_MS,
   MAX_DEPTH,
@@ -88,6 +88,17 @@ export interface AnalyzeResult {
   elapsedMs: number;
   /** 最佳着法分值（走子方视角，厘兵） */
   score: number;
+  /**
+   * **杀棋距离**（手，走子方视角）。
+   *
+   * > 0 = 走子方 N 手内将死对手；< 0 = 走子方 N 手内被将死；
+   * > null = 这不是杀棋局面（或引擎没给杀棋分值）。
+   *
+   * 为什么单独一个字段而不是从 `score` 推：杀棋局面的 `score cp` 是 null，
+   * 「一步杀」和「十手杀」在 `score` 上长得一模一样 ——
+   * 残局关卡按「几步杀」分难度，靠的就是这个值。
+   */
+  mateIn: number | null;
   /** 是否因为时间预算耗尽而中断 */
   timedOut: boolean;
 }
@@ -106,12 +117,12 @@ export function analyzePositionDetailed(
   // 非法 FEN 直接抛错（上层会转成协议里的 error 字段），局面本身不合法就没法分析
   const game = new Chess(fen);
   if (game.turn() !== color) {
-    return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, timedOut: false };
+    return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, mateIn: null, timedOut: false };
   }
   const legal = game.moves({ verbose: true }) as Move[];
   if (legal.length === 0) {
     // 将死 / 逼和：没有可走的着法
-    return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, timedOut: false };
+    return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, mateIn: null, timedOut: false };
   }
 
   const outcome: SearchOutcome = searchPosition(fen, {
@@ -142,6 +153,8 @@ export function analyzePositionDetailed(
     nodes: outcome.nodes,
     elapsedMs: outcome.elapsedMs,
     score: outcome.score,
+    /** 杀棋距离（手）；不是杀棋局面时为 null */
+    mateIn: mateDistanceFromScore(outcome.score),
     timedOut: outcome.timedOut,
   };
 }

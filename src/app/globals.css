@@ -1951,6 +1951,18 @@ button {
   box-shadow: inset 0 0 0 100px rgba(180, 52, 31, 0.5);
 }
 
+/**
+ * 走错的那一手（残局关卡）：起止两格标红。
+ *
+ * 用**红环**而不是红色铺底 —— 铺底会把棋子盖住，
+ * 玩家看不清自己走的是哪个子；红环只圈住格子，棋子照样清楚。
+ */
+.square.wrongmove {
+  box-shadow:
+    inset 0 0 0 3px rgba(206, 48, 38, 0.95),
+    inset 0 0 0 100px rgba(206, 48, 38, 0.16);
+}
+
 .square.selected {
   box-shadow:
     inset 0 0 0 100px rgba(217, 147, 13, 0.55),
@@ -4083,6 +4095,120 @@ button.status-dot:hover {
 .entry-row-arrow {
   margin-left: auto;
   color: var(--text-faint);
+}
+
+/* ---------- 残局关卡 ---------- */
+
+/*
+ * 关卡列表。
+ *
+ * 三十关平铺一列，左列会长到把棋盘顶出屏幕 ——
+ * 宽屏（列表在棋盘旁边）时让列表**在内部滚**，棋盘留在视线里。
+ * 窄屏是单列、棋盘在最上面，那时再套一层内部滚动就是「套娃滚动」，所以只在宽屏生效。
+ */
+.puzzle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+@media (min-width: 900px) {
+  .puzzle-list {
+    max-height: calc(100vh - 300px);
+    overflow-y: auto;
+  }
+}
+
+.puzzle-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.puzzle-row:hover {
+  background: var(--bg-elevated);
+}
+
+.puzzle-row.active {
+  background: var(--accent-soft);
+}
+
+/* 关卡序号：等宽字形，列表扫起来一眼能数到第几关 */
+.puzzle-row-no {
+  flex: none;
+  min-width: 20px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  text-align: right;
+}
+
+.puzzle-row.active .puzzle-row-no {
+  color: var(--accent-strong);
+}
+
+.puzzle-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.puzzle-row-name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.puzzle-row-goal {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.puzzle-row-stars {
+  flex: none;
+  display: inline-flex;
+  gap: 1px;
+  color: var(--accent-strong);
+}
+
+.puzzle-row-done {
+  flex: none;
+  display: inline-flex;
+  color: var(--accent-strong);
+}
+
+/* 关卡状态条：走错了 / 通关了 */
+.puzzle-status {
+  margin-top: var(--sp-3);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.puzzle-status.wrong {
+  background: rgba(206, 48, 38, 0.12);
+  color: #b3261e;
+}
+
+.puzzle-status.done {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 /* ---------- 响应式 ---------- */

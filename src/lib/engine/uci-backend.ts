@@ -127,10 +127,10 @@ export class StockfishBackend {
     // 局面对不对得上：轮到别人走 / 没着可走 → 没有推荐
     const game = new Chess(fen);
     if (game.turn() !== color) {
-      return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, timedOut: false };
+      return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, mateIn: null, timedOut: false };
     }
     if (game.moves({ verbose: true }).length === 0) {
-      return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, timedOut: false };
+      return { move: null, depth: 0, nodes: 0, elapsedMs: 0, score: 0, mateIn: null, timedOut: false };
     }
 
     await this.start();
@@ -181,6 +181,8 @@ export class StockfishBackend {
       nodes: best.nodes,
       elapsedMs,
       score: best.scoreCp ?? 0,
+      /** 杀棋距离（手）；不是杀棋局面时为 null */
+      mateIn: best.scoreMate ?? null,
       timedOut: elapsedMs >= timeMs,
     };
   }

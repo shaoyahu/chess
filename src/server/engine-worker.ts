@@ -55,6 +55,8 @@ interface AnalyzeResponse {
   nodes?: number;
   /** 最佳着法分值（走子方视角，厘兵） */
   score?: number;
+  /** 杀棋距离（手，走子方视角）；不是杀棋局面时是 null */
+  mateIn?: number | null;
   /** 耗时（毫秒） */
   elapsedMs?: number;
   error?: string;
@@ -129,6 +131,7 @@ async function handle(line: string): Promise<void> {
         depth: result.depth,
         nodes: result.nodes,
         score: result.score,
+        mateIn: result.mateIn,
         elapsedMs: result.elapsedMs,
       });
       return;
@@ -145,6 +148,7 @@ async function handle(line: string): Promise<void> {
           depth: result.depth,
           nodes: result.nodes,
           score: result.score,
+          mateIn: result.mateIn,
           elapsedMs: result.elapsedMs,
         });
         return;
@@ -173,6 +177,7 @@ async function handle(line: string): Promise<void> {
       depth: result.depth,
       nodes: result.nodes,
       score: result.score,
+      mateIn: result.mateIn,
       elapsedMs: result.elapsedMs,
     });
   } catch (err) {

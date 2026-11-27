@@ -16,6 +16,7 @@
     "contrast": "tsx scripts/check-contrast.ts",
     "deploy:check": "tsx scripts/check-deploy.ts",
     "assets:pieces": "tsx --tsconfig tsconfig.scripts.json scripts/generate-pieces.ts",
+    "gen:endgame-puzzles": "tsx scripts/generate-endgame-puzzles.ts",
     "preview:appearance": "tsx --tsconfig tsconfig.scripts.json scripts/preview-piece-appearance.ts",
     "assets:silhouette": "tsx scripts/dump-piece-silhouette.ts artifacts/silhouette 0 game",
     "verify": "npm run typecheck && npm run test && npm run licenses && npm run contrast && npm run verify:ws-only && npm run verify:engine && npm run verify:stockfish",
@@ -32,6 +33,7 @@
     "verify:drag": "tsx scripts/verify-drag.ts",
     "verify:replay": "tsx scripts/verify-replay.ts",
     "verify:practice": "tsx scripts/verify-practice.ts",
+    "verify:endgame-puzzles": "tsx scripts/verify-endgame-puzzles.ts",
     "verify:lessons": "tsx scripts/verify-lesson-text.ts",
     "verify:color-draw": "tsx scripts/verify-color-draw.ts",
     "verify:ws-only": "tsx scripts/verify-ws-only.ts",
@@ -52,6 +54,7 @@
     "mutate:replay": "tsx scripts/mutate-replay.ts",
     "mutate:lessons": "tsx scripts/mutate-lesson-text.ts",
     "mutate:practice": "tsx scripts/mutate-practice.ts",
+    "mutate:endgame-puzzles": "tsx scripts/mutate-endgame-puzzles.ts",
     "mutate:color-draw": "tsx scripts/mutate-color-draw.ts",
     "mutate:engine": "tsx scripts/mutate-engine-tactics.ts",
     "mutate:stockfish": "tsx scripts/mutate-stockfish.ts"

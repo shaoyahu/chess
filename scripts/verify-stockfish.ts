@@ -107,6 +107,7 @@ function makeFakeEngine(rec: EngineRecorder): UciEngineLike {
         from: 'e2',
         to: 'e4',
         scoreCp: 12,
+        scoreMate: null,
         depth: opts.depth ?? 10,
         nodes: 1000,
       };
