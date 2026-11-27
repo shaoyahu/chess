@@ -62,11 +62,39 @@ async function ensureDir(): Promise<void> {
   await fs.mkdir(dataDir(), { recursive: true });
 }
 
-/** 原子写：先写临时文件，再 rename 覆盖 */
+/**
+ * **原子写**：先写临时文件，再 rename 覆盖。
+ *
+ * ⚠️ **临时文件名必须每次都不一样**（`tmpName`）——
+ * 用固定的 `${file}.tmp` 的话，**两个并发的写会互相抢那个 tmp 文件**：
+ * A 写完 tmp → B 也写 tmp（覆盖）→ A 先 rename 把 tmp 移走 → B 再 rename
+ * 就得到 **ENOENT**（源文件不存在了）。
+ *
+ * 这不是假想：2026-11-27 取证发现，生产服务器上存档从 11-25 16:34 起
+ * 就一直在报 `rename ... ENOENT`（连续 46 小时！）——
+ * 机器越忙（写盘越慢），两次 flush 越容易交错，撞得越勤。
+ */
+let tmpSeq = 0;
+
+function tmpName(file: string): string {
+  tmpSeq += 1;
+  return `${file}.${process.pid}.${tmpSeq}.tmp`;
+}
+
 async function writeAtomic(file: string, data: unknown): Promise<void> {
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+  const tmp = tmpName(file);
+  try {
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+    await fs.rename(tmp, file);
+  } catch (err) {
+    // 失败也要把临时文件清掉 —— 不然 .data 里会堆一堆 *.tmp
+    try {
+      await fs.rm(tmp, { force: true });
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
 }
 
 /** 保存房间快照（节流：最多每 2 秒写一次盘） */
@@ -93,6 +121,29 @@ export function scheduleSaveSessions(sessions: SessionArchive[]): void {
 }
 
 /**
+ * **串行化写盘**：上一次 flush 没写完，就不开始下一次。
+ *
+ * 为什么必须串行：
+ *   节流定时器和「立即写盘」（进程退出前 / 测试里）可能同时在跑，
+ *   两次 flush 交错时，写同一个文件就会互相抢 tmp 文件（见 `writeAtomic`）。
+ *   机器越忙（写盘越慢）越容易交错 —— 而那正是最需要存档的时候。
+ */
+let flushChain: Promise<void> = Promise.resolve();
+
+async function writeSnapshots(
+  roomsToWrite: RoomArchive[] | null,
+  sessionsToWrite: SessionArchive[] | null,
+): Promise<void> {
+  try {
+    await ensureDir();
+    if (roomsToWrite) await writeAtomic(roomsFile(), roomsToWrite);
+    if (sessionsToWrite) await writeAtomic(sessionsFile(), sessionsToWrite);
+  } catch (err) {
+    console.error('[store] 保存失败:', err);
+  }
+}
+
+/**
  * 立即写盘。
  *
  * 传入**当前**的完整快照 —— 而不是依赖内部缓冲。
@@ -110,13 +161,10 @@ export async function flush(rooms?: RoomArchive[], sessions?: SessionArchive[]):
   const sessionsToWrite = sessions ?? pendingSessions;
   pendingRooms = null;
   pendingSessions = null;
-  try {
-    await ensureDir();
-    if (roomsToWrite) await writeAtomic(roomsFile(), roomsToWrite);
-    if (sessionsToWrite) await writeAtomic(sessionsFile(), sessionsToWrite);
-  } catch (err) {
-    console.error('[store] 保存失败:', err);
-  }
+  const run = flushChain.then(() => writeSnapshots(roomsToWrite, sessionsToWrite));
+  // 链上只接「不抛错」的版本 —— 一次失败不能把后面的写盘全卡住
+  flushChain = run.catch(() => undefined);
+  await run;
 }
 
 /**
