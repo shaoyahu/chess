@@ -187,6 +187,91 @@ export class StockfishBackend {
     };
   }
 
+  /**
+   * **一次分析拿到多个候选着法**（MultiPV）。
+   *
+   * ## 为什么残局关卡需要它
+   *
+   * 「解说对手走棋」要回答的是「这手为什么好」——
+   * 而「好」只能靠**跟同一局面下的其它着法比**才说得清。
+   *
+   * 逐个着法单独分析有两个问题：
+   *   1. 慢：N 个着法 N 次搜索；
+   *   2. **分值不可比**：每次搜索都带着上次残留的哈希表，
+   *      同一着法两次分析能差二十几厘兵 —— 拿这种分值比高低，比的是噪声。
+   *
+   * MultiPV 一次搜索给出所有候选，**分值出自同一棵搜索树**，天生可比。
+   *
+   * @param fen 当前局面
+   * @param color 要走哪一方
+   * @param opts 深度、候选数、是否清哈希
+   */
+  async analyzeMulti(
+    fen: string,
+    color: 'w' | 'b',
+    opts: { depth: number; multiPv: number; clearHash?: boolean; timeMs?: number } ,
+  ): Promise<{ move: EngineMove; scoreCp: number | null; mateIn: number | null; depth: number }[]> {
+    const game = new Chess(fen);
+    if (game.turn() !== color) return [];
+    const legal = game.moves({ verbose: true });
+    if (legal.length === 0) return [];
+
+    await this.start();
+    const engine = this.engine;
+    if (!engine) {
+      throw new StockfishUnavailableError('Stockfish 未就绪');
+    }
+    if (typeof engine.searchMulti !== 'function') {
+      throw new StockfishUnavailableError('当前引擎后端不支持 MultiPV');
+    }
+
+    // MultiPV 是全局选项，限强开关会污染分值 —— 一律用满血引擎。
+    if (this.currentLimit !== false) {
+      engine.setOption('UCI_LimitStrength', 'false');
+      this.currentLimit = false;
+      this.currentElo = null;
+    }
+
+    const rows = await engine.searchMulti({
+      fen,
+      depth: opts.depth,
+      multiPv: Math.min(opts.multiPv, legal.length),
+      ...(opts.clearHash ? { clearHash: true } : {}),
+      ...(opts.timeMs !== undefined ? { timeMs: opts.timeMs } : {}),
+    });
+
+    const out: { move: EngineMove; scoreCp: number | null; mateIn: number | null; depth: number }[] = [];
+    for (const row of rows) {
+      // 引擎给的着法一律用 chess.js 复核 —— 宁可少一条，不要一条非法的
+      const probe = new Chess(fen);
+      let played;
+      try {
+        played = probe.move({
+          from: row.from,
+          to: row.to,
+          ...(row.promotion ? { promotion: row.promotion } : {}),
+        });
+      } catch {
+        continue;
+      }
+      out.push({
+        move: {
+          from: played.from,
+          to: played.to,
+          // chess.js 的 promotion 类型更宽（含 'p'/'b'/'n'/'r'/'q'），
+          // 但这里只可能出现升变四子 —— 收窄一下对上 EngineMove 的类型。
+          ...(played.promotion && played.promotion !== 'p'
+            ? { promotion: played.promotion as 'q' | 'r' | 'b' | 'n' }
+            : {}),
+        },
+        scoreCp: row.scoreCp,
+        mateIn: row.scoreMate,
+        depth: row.depth,
+      });
+    }
+    return out;
+  }
+
   /** 释放引擎进程 */
   close(): void {
     if (this.engine) {

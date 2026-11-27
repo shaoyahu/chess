@@ -2,17 +2,22 @@
  * 变异测试 —— 确认「残局关卡」这条新机制的门禁真的能抓到回退。
  *
  * 变异分两组，对应两套守卫：
- *   **浏览器门禁**（scripts/verify-endgame-puzzles.ts，G1~G9）
+ *   **浏览器门禁**（scripts/verify-endgame-puzzles.ts，G1~G12）
  *     M1 走错了也推进局面      → G4 必须红
  *     M2 提示不出指引箭头      → G6 必须红
  *     M3 通关后不显示「下一关」→ G7 必须红
  *     M4 关卡列表只渲染 5 关   → G2 必须红
  *     M5 走对了也不推进局面    → G5 必须红
+ *     M10 主题筛选不生效       → G10 必须红
+ *     M11 不显示对手解说       → G11 必须红
+ *     M12 解说内容是空壳       → G12 必须红
  *   **单元测试**（tests/puzzles.test.ts）
  *     M6 只认一着（忽略等价正解）→ 「等价正解算走对」必须红
  *     M7 目标判定恒真          → 「目标没达成时不能算通关」必须红
  *     M8 走错了不记错的着法    → G4 必须红
  *     M9 走对之后不判定通关    → G7 必须红
+ *     M13 解说恒真（无论事实都返回一句话）→ G12 必须红
+ *     M14 「已败」阈值符号翻转  → 「已败」的判定规则必须红
  *
  * 为什么要做：
  *   守卫脚本自己也可能写错（比如断言写歪、跳过条件太宽），
@@ -32,8 +37,12 @@ import { TestServer } from './lib/test-server';
 
 const PAGE = resolve(process.cwd(), 'src/app/practice/page.tsx');
 const SESSION = resolve(process.cwd(), 'src/lib/practice/puzzles/session.ts');
+const NOTES = resolve(process.cwd(), 'src/lib/practice/puzzles/notes.ts');
+const TYPES = resolve(process.cwd(), 'src/lib/practice/puzzles/types.ts');
 const PAGE_BACKUP = resolve(process.cwd(), '.puzzle-mutation-page.tsx');
 const SESSION_BACKUP = resolve(process.cwd(), '.puzzle-mutation-session.ts');
+const NOTES_BACKUP = resolve(process.cwd(), '.puzzle-mutation-notes.ts');
+const TYPES_BACKUP = resolve(process.cwd(), '.puzzle-mutation-types.ts');
 
 type Guard = 'browser' | 'unit';
 
@@ -80,7 +89,7 @@ const MUTATIONS: Mutation[] = [
     file: PAGE,
     expect: 'G2',
     guard: 'browser',
-    apply: (src) => src.replace('{PUZZLES.map((item, i) => (', '{PUZZLES.slice(0, 5).map((item, i) => ('),
+    apply: (src) => src.replace('{visiblePuzzles.map((item) => {', '{visiblePuzzles.slice(0, 5).map((item) => {'),
   },
   {
     name: 'M5 走对了也不推进局面',
@@ -125,6 +134,57 @@ const MUTATIONS: Mutation[] = [
         'session: { ...nextSession, solved: session.solved },',
       ),
   },
+  {
+    name: 'M10 主题筛选不生效（点了也不筛）',
+    file: PAGE,
+    expect: 'G10',
+    guard: 'browser',
+    apply: (src) =>
+      src.replace(
+        '() => (puzzleTheme ? PUZZLES.filter((p) => p.theme === puzzleTheme) : PUZZLES),',
+        '() => PUZZLES,',
+      ),
+  },
+  {
+    name: 'M11 不显示对手解说面板',
+    file: PAGE,
+    expect: 'G11',
+    guard: 'browser',
+    apply: (src) =>
+      src.replace('{opponentNotes.length > 0 && (', '{false && opponentNotes.length > 0 && ('),
+  },
+  {
+    name: 'M12 解说文本恒定（不管事实都返回同一句）',
+    file: NOTES,
+    expect: 'G12',
+    guard: 'browser',
+    apply: (src) =>
+      src.replace('export function opponentNoteText(note: PuzzleOpponentNote): string | null {',
+        'export function opponentNoteText(note: PuzzleOpponentNote): string | null {\n  return "固定的一句话";'),
+  },
+  {
+    name: 'M13 解说恒真（永远说「最优」，掩盖非最优）',
+    file: NOTES,
+    expect: 'G12',
+    guard: 'browser',
+    apply: (src) =>
+      src.replace("parts.push('这一手不是最优');", "parts.push('这一手是最优');"),
+  },
+  {
+    /*
+     * 这条变异是**真实踩过的坑**：
+     * 判据写成 `score <= -阈值`（阈值本身是负数），取反后变成 `score <= +阈值`
+     * —— 于是几乎每个局面都被判成「对手已经输定了」。
+     *
+     * 单测必须能抓住它：判据本身有独立断言，且数据里的标志要与判据对得上。
+     */
+    name: 'M14 「已败」阈值符号翻转（-500 写成 500）',
+    file: TYPES,
+    expect: '「已败」的判定规则',
+    guard: 'unit',
+    apply: (src) =>
+      src.replace('export const HOPELESS_SCORE_CP = -500;', 'export const HOPELESS_SCORE_CP = 500;'),
+  },
 ];
 
 interface RunResult {
@@ -165,8 +225,12 @@ function hasFlag(out: string, expect: string): boolean {
 function restoreAll(originals: Map<string, string>): void {
   copyFileSync(PAGE_BACKUP, PAGE);
   copyFileSync(SESSION_BACKUP, SESSION);
+  copyFileSync(NOTES_BACKUP, NOTES);
+  copyFileSync(TYPES_BACKUP, TYPES);
   rmSync(PAGE_BACKUP, { force: true });
   rmSync(SESSION_BACKUP, { force: true });
+  rmSync(NOTES_BACKUP, { force: true });
+  rmSync(TYPES_BACKUP, { force: true });
   for (const [file, content] of originals) {
     if (readFileSync(file, 'utf-8') !== content) {
       console.error(`\n❌ 还原失败：${file} 与原始内容不一致，请检查！`);
@@ -179,9 +243,13 @@ async function main(): Promise<void> {
   const originals = new Map<string, string>([
     [PAGE, readFileSync(PAGE, 'utf-8')],
     [SESSION, readFileSync(SESSION, 'utf-8')],
+    [NOTES, readFileSync(NOTES, 'utf-8')],
+    [TYPES, readFileSync(TYPES, 'utf-8')],
   ]);
   copyFileSync(PAGE, PAGE_BACKUP);
   copyFileSync(SESSION, SESSION_BACKUP);
+  copyFileSync(NOTES, NOTES_BACKUP);
+  copyFileSync(TYPES, TYPES_BACKUP);
 
   // 被中断时也要还原 —— 否则仓库里留下的是**变异态的生产代码**
   const onSignal = (sig: string) => {

@@ -5,9 +5,9 @@
  *   「残局关卡」是一条**独立的机制**（关卡列表 + 走子判定 + 提示 + 通关），
  *   跟课程演示、自由摆棋都不是一回事，混进别的脚本会让失败难定位。
  *
- * 门禁清单（9 条，G1~G9）：
+ * 门禁清单（12 条，G1~G12）：
  *   G1  /practice 有「残局关卡」分区，点它真的切过去。
- *   G2  关卡列表有 30 关，每关都带编号、主题与难度星。
+ *   G2  关卡列表齐全，每关都带编号、主题与难度星。
  *   G3  选第 1 关 → **棋盘摆出来的就是这一关的起始局面**（棋子分布一致）。
  *   G4  走**错**一步 → 状态条提示「这一步不对」，而且**局面一步都没动**。
  *   G5  走**对**一步 → 棋盘真的推进（对手那手也自动接上了）。
@@ -15,9 +15,12 @@
  *   G7  走完整关 → 显示「通关」，并出现「下一关」；点它切到下一关。
  *   G8  页面上**没有解释性文字**（不教用户怎么点 —— 界面要自解释）。
  *   G9  窄屏（430px）**不横向溢出**。
+ *   G10 主题分类筛选：点某个类别，列表只剩那一类；点「全部」能恢复。
+ *   G11 对手走完之后，右栏出现「对手怎么走」的解说。
+ *   G12 解说有**实质内容**：每个对手节点都带 note，字段自洽，文本不空。
  *
  * 判定方式跟项目规矩一致：**进程退出码** + 门禁自己打印的 ❌ 行 + 门禁编号。
- * 每条门禁的失败信息都必须带上自己的编号（G1…G9）——
+ * 每条门禁的失败信息都必须带上自己的编号（G1…G12）——
  * 失败信息不带编号就会出现假绿（读的人不知道是哪一条挂的）。
  *
  * **这一份门禁自己也要被变异测试过**（见 scripts/mutate-endgame-puzzles.ts）。
@@ -30,6 +33,8 @@ import { Browser, sleep } from './lib/browser';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PUZZLES } from '../src/lib/practice/puzzles/data';
+import { themeLabel } from '../src/lib/practice/puzzles/themes';
+import { opponentNoteText } from '../src/lib/practice/puzzles/notes';
 
 /** 地址解析：优先 `--url=`，其次第一个长得像 http 地址的位置参数 */
 function resolveUrl(argv: string[]): string {
@@ -131,15 +136,13 @@ function sanToSquares(fen: string, san: string): { from: string; to: string } {
   return { from: played.from, to: played.to };
 }
 
-/** 一个**合法但不是正解**的着法（用来测「走错」） */
-function aWrongButLegalMove(fen: string, rightSan: string, also: string[] = []): string {
+/** 一个**合法但不是正解**的着法（用来测「走错」）；没有就返回 null */
+function aWrongButLegalMove(fen: string, rightSan: string, also: string[] = []): string | null {
   const legal = new Chess(fen).moves({ verbose: true }).map((m) => m.san);
   // 排除升变着法：升变会弹选择框，测「走错」时不想掺进升变的交互
-  const wrong = legal.find(
-    (san) => san !== rightSan && !also.includes(san) && !san.includes('='),
+  return (
+    legal.find((san) => san !== rightSan && !also.includes(san) && !san.includes('=')) ?? null
   );
-  if (!wrong) throw new Error('这个局面没有可以用来测「走错」的着法');
-  return wrong;
 }
 
 /** 点一格 */
@@ -237,7 +240,7 @@ async function main(): Promise<void> {
     /* ================================================================ */
     /* G2：关卡列表齐全                                              */
     /* ================================================================ */
-    await step('G2', '关卡列表有 30 关，每关带编号、主题与难度星', async () => {
+    await step('G2', '关卡列表齐全，每关带编号、主题与难度星', async () => {
       const rows = await page.evaluate<number>(`document.querySelectorAll('.puzzle-row').length`);
       if (rows !== PUZZLES.length) {
         throw new Error(`G2 关卡列表有 ${rows} 关，题库是 ${PUZZLES.length} 关`);
@@ -259,11 +262,24 @@ async function main(): Promise<void> {
     /* ================================================================ */
     /* G3：棋盘摆的就是这一关的起始局面                              */
     /* ================================================================ */
-    const puzzle = PUZZLES[0];
+    /*
+     * 挑一关**有「错但合法」的着法**、而且**解法里没有升变**的关卡。
+     *
+     *   - 没有错步可测的关卡：有的残局每一步都算对（只有一着能走通），
+     *     拿那种关卡测「走错」根本测不到东西；
+     *   - 有升变的关卡：升变会弹选择框，门的点子助手不处理那个交互。
+     */
+    const puzzle =
+      PUZZLES.find(
+        (p) =>
+          !p.line.some((ply) => ply.san.includes('=')) &&
+          aWrongButLegalMove(p.fen, p.line[0].san, p.line[0].also ?? []) !== null,
+      ) ?? PUZZLES[0];
+    const puzzleIndex = PUZZLES.findIndex((p) => p.id === puzzle.id);
     const flipped = puzzle.side === 'b';
-    await step('G3', '选第 1 关，棋盘摆出来的就是这一关的起始局面', async () => {
+    await step('G3', '选一关，棋盘摆出来的就是这一关的起始局面', async () => {
       await page.evaluate(
-        `(() => { const el = document.querySelectorAll('.puzzle-row')[0]; if (!el) throw new Error('没有关卡行'); el.click(); })()`,
+        `(() => { const el = document.querySelectorAll('.puzzle-row')[${puzzleIndex}]; if (!el) throw new Error('没有关卡行'); el.click(); })()`,
       );
       await sleep(500);
       const onBoard = await page.evaluate<string[]>(pieceSquaresExpr(flipped));
@@ -281,6 +297,7 @@ async function main(): Promise<void> {
     /* ================================================================ */
     await step('G4', '走错一步：提示「这一步不对」，而且局面一步都没动', async () => {
       const wrongSan = aWrongButLegalMove(puzzle.fen, puzzle.line[0].san, puzzle.line[0].also ?? []);
+      if (!wrongSan) throw new Error('G4 这一关没有可以用来测「走错」的着法');
       const before = await page.evaluate<string[]>(pieceSquaresExpr(flipped));
 
       await playMove(page, puzzle.fen, wrongSan);
@@ -371,12 +388,18 @@ async function main(): Promise<void> {
       );
       if (!nextBtn) throw new Error('G7 通关了但没有「下一关」按钮');
 
+      // 当前是第几关（列表里的编号）—— 「下一关」应该正好 +1
+      const currentNo = await page.evaluate<string>(
+        `((document.querySelector('.puzzle-row.active .puzzle-row-no') || {}).textContent || '').trim()`,
+      );
       await page.clickText('button', '下一关', '下一关按钮');
       await sleep(500);
       const active = await page.evaluate<string>(
         `((document.querySelector('.puzzle-row.active .puzzle-row-no') || {}).textContent || '').trim()`,
       );
-      if (active !== '2') throw new Error(`G7 点「下一关」后当前关是第 ${active} 关，应该是第 2 关`);
+      if (active !== String(Number(currentNo) + 1)) {
+        throw new Error(`G7 点「下一关」后当前关是第 ${active} 关，应该是第 ${Number(currentNo) + 1} 关`);
+      }
     });
 
     /* ================================================================ */
@@ -418,6 +441,143 @@ async function main(): Promise<void> {
       if (overflow > 2) throw new Error(`G9 窄屏横向溢出了 ${overflow}px`);
       await shot(page, 'G9-narrow');
       await page.setViewport(1440, 950);
+    });
+    /* ================================================================ */
+    /* G10：主题分类筛选                                            */
+    /* ================================================================ */
+    await step('G10', '主题筛选：点某个类别，列表只剩那一类', async () => {
+      // 找一个确实有关卡的类别
+      const counts = new Map<string, number>();
+      for (const p of PUZZLES) counts.set(p.theme, (counts.get(p.theme) ?? 0) + 1);
+      const target = [...counts.entries()].find(([, n]) => n > 0);
+      if (!target) throw new Error('G10 题库里没有任何带主题的关卡');
+      const [theme, expected] = target;
+
+      // 点筛选栏里那个类别的按钮（靠 data-theme 定位 —— 标题是中文，会改）
+      const clicked = await page.evaluate<boolean>(
+        `(() => {
+          const hit = document.querySelector('.puzzle-filter [data-theme="' + ${JSON.stringify(theme)} + '"]');
+          if (!hit) return false;
+          hit.click();
+          return true;
+        })()`,
+      );
+      if (!clicked) throw new Error(`G10 筛选栏里找不到「${theme}」这个类别`);
+      await sleep(400);
+
+      const rows = await page.evaluate<number>(`document.querySelectorAll('.puzzle-row').length`);
+      if (rows !== expected) {
+        throw new Error(`G10 筛「${theme}」后有 ${rows} 关，应该是 ${expected} 关`);
+      }
+      // 每一行的主题都必须是被筛的那个
+      const allSame = await page.evaluate<boolean>(
+        `(() => {
+          const names = [...document.querySelectorAll('.puzzle-row-name')].map((e) => (e.textContent || '').trim());
+          return names.length > 0 && names.every((n) => n === ${JSON.stringify(themeLabel(theme))});
+        })()`,
+      );
+      if (!allSame) throw new Error(`G10 筛选后列表里混进了别的类别`);
+
+      // 回到「全部」
+      await page.evaluate(
+        `(() => {
+          const chips = [...document.querySelectorAll('.puzzle-filter .lesson-filter-chip')];
+          const all = chips.find((c) => (c.childNodes[0]?.textContent || '').trim() === '全部');
+          if (all) all.click();
+        })()`,
+      );
+      await sleep(400);
+      const restored = await page.evaluate<number>(`document.querySelectorAll('.puzzle-row').length`);
+      if (restored !== PUZZLES.length) {
+        throw new Error(`G10 点「全部」后只有 ${restored} 关，应该是 ${PUZZLES.length} 关`);
+      }
+    });
+
+    /* ================================================================ */
+    /* G11：对手着法解说出现在右栏                                    */
+    /* ================================================================ */
+    await step('G11', '对手走完之后，右栏出现「对手怎么走」的解说', async () => {
+      // 回到刚才那一关（列表里点它，不是写死第 1 关 —— 选关是按「有错步可测」挑的）
+      await page.evaluate(
+        `(() => { const el = document.querySelectorAll('.puzzle-row')[${puzzleIndex}]; if (!el) throw new Error('没有关卡行'); el.click(); })()`,
+      );
+      await sleep(500);
+
+      // 走一步 → 对手那手自动接上 → 右栏出现解说
+      await playMove(page, puzzle.fen, puzzle.line[0].san);
+      await sleep(500);
+
+      const hasPanel = await page.evaluate<boolean>(`!!document.querySelector('.puzzle-notes')`);
+      if (!hasPanel) throw new Error('G11 走完一步后右栏没有出现「对手怎么走」解说面板');
+
+      const text = await page.evaluate<string>(
+        `((document.querySelector('.puzzle-notes-text') || {}).textContent || '').trim()`,
+      );
+      if (!text) throw new Error('G11 解说面板里没有文字');
+
+      const san = await page.evaluate<string>(
+        `((document.querySelector('.puzzle-notes-san') || {}).textContent || '').trim()`,
+      );
+      if (!san) throw new Error('G11 解说里没有显示对手走的那一手');
+    });
+
+    /* ================================================================ */
+    /* G12：解说里必须有实质内容，不能是空壳                          */
+    /* ================================================================ */
+    await step('G12', '解说说的是「为什么这么走」，不是空话', async () => {
+      /*
+       * 解说文本由 `opponentNoteText` 从离线算好的事实拼出来。
+       * 这里查的是**事实**本身：题库里每个对手节点都得带 note，
+       * 且 note 的字段要自洽（合法着法数 ≥ 1、分值或杀棋距离至少有一个…）。
+       */
+      const bad = PUZZLES.flatMap((p) =>
+        p.line
+          .filter((ply) => ply.color !== p.side)
+          .map((ply) => ({ id: p.id, san: ply.san, note: ply.note }))
+          .filter((x) => {
+            if (!x.note) return true;
+            if (x.note.legalCount < 1) return true;
+            /*
+             * 分值与杀棋距离**至少有一个**。
+             *
+             * 杀棋局面里引擎给的是「几手后被将死」，没有分值（null）——
+             * 所以不能一律要求 bestScoreAfter 非空，
+             * 但两个都没有就说明什么事实都没算出来。
+             */
+            if (x.note.bestScoreAfter === null && x.note.bestMateInAfter === null) return true;
+            return false;
+          }),
+      );
+      if (bad.length > 0) {
+        const first = bad[0];
+        throw new Error(
+          `G12 有 ${bad.length} 个对手节点没带解说或数据不自洽（例：${first.id} ${first.san}）`,
+        );
+      }
+      // 解说文本本身不能为空
+      for (const p of PUZZLES) {
+        for (const ply of p.line) {
+          if (ply.color === p.side || !ply.note) continue;
+          const text = opponentNoteText(ply.note);
+          if (!text || text.length < 6) {
+            throw new Error(`G12 ${p.id} 的 ${ply.san} 解说文本是空的或太短：「${text ?? ''}」`);
+          }
+          /*
+           * **语义断言**：事实说「不是最优」，解说就不能说「是最优」。
+           *
+           * 只查「有没有文本」是不够的 —— 把「不是最优」改成「是最优」，
+           * 文本照样有、长度照样够，门禁会照样绿。
+           * 这条断言就是防这个的。
+           */
+          if (ply.note.isBest === false && !text.includes('不是最优')) {
+            throw new Error(`G12 ${p.id} 的 ${ply.san} 事实是「不是最优」，解说却没说实话：「${text}」`);
+          }
+          // 事实说「唯一合法着法」，解说就要说明白
+          if (ply.note.legalCount === 1 && !text.includes('只有这一着')) {
+            throw new Error(`G12 ${p.id} 的 ${ply.san} 是唯一合法着法，解说却没说：「${text}」`);
+          }
+        }
+      }
     });
   } finally {
     await browser.close();

@@ -4120,7 +4120,7 @@ button.status-dot:hover {
 /*
  * 关卡列表。
  *
- * 三十关平铺一列，左列会长到把棋盘顶出屏幕 ——
+ * 三百关平铺一列，左列会长到把棋盘顶出屏幕 ——
  * 宽屏（列表在棋盘旁边）时让列表**在内部滚**，棋盘留在视线里。
  * 窄屏是单列、棋盘在最上面，那时再套一层内部滚动就是「套娃滚动」，所以只在宽屏生效。
  */
@@ -4227,6 +4227,65 @@ button.status-dot:hover {
 .puzzle-status.done {
   background: var(--accent-soft);
   color: var(--accent-strong);
+}
+
+/* ---------- 主题分类筛选 ---------- */
+
+/*
+ * 筛选栏要能滚 —— 38 个类别一行放不下，
+ * 但不能让它把列表挤没了，所以限高 + 纵向滚动。
+ */
+.puzzle-filter {
+  max-height: 116px;
+  overflow-y: auto;
+  margin-bottom: var(--sp-2);
+}
+
+/* ---------- 对手着法解说（右栏常驻） ---------- */
+
+.puzzle-notes {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.puzzle-notes-head {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin-bottom: var(--sp-2);
+}
+
+.puzzle-notes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.puzzle-notes-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 对手这手的着法 —— 等宽字形，跟棋谱里的记法一致 */
+.puzzle-notes-san {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
+.puzzle-notes-text {
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--text);
 }
 
 /* ---------- 响应式 ---------- */

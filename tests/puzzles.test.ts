@@ -22,10 +22,13 @@ import {
   goalReached,
   hintFor,
   isAcceptedMove,
+  isOpponentHopeless,
   isSolved,
   loadProgress,
   markCurrent,
   markSolved,
+  materialCp,
+  opponentNoteText,
   playerMoveCount,
   saveProgress,
   sessionPosition,
@@ -180,6 +183,227 @@ describe('残局关卡 · 题库', () => {
       expect(themeHint(p.theme).trim().length).toBeGreaterThan(0);
     }
   });
+
+  it('关卡数量达到 300 关', () => {
+    expect(PUZZLES.length, '残局关卡少于 300 关').toBeGreaterThanOrEqual(300);
+  });
+
+  it('主题分类铺开：至少覆盖 12 个类别，且没有任何一类吃掉题库', () => {
+    const counts = new Map<string, number>();
+    for (const p of PUZZLES) counts.set(p.theme, (counts.get(p.theme) ?? 0) + 1);
+    expect(counts.size, '主题类别太少（分类就没意义了）').toBeGreaterThanOrEqual(12);
+    // 任何一类不超过总数的 20%
+    const max = Math.max(...counts.values());
+    expect(max / PUZZLES.length, '某一类主题占比过高').toBeLessThan(0.2);
+  });
+
+  it('有多步将杀的关卡（玩家要走两步以上）', () => {
+    const multi = PUZZLES.filter((p) => p.goal === 'mate' && (p.mateIn ?? 0) >= 2);
+    expect(multi.length, '多步将杀的关卡太少').toBeGreaterThanOrEqual(30);
+    // 其中还得有真正「多手」的（3 手以上）
+    const deep = PUZZLES.filter((p) => p.goal === 'mate' && (p.mateIn ?? 0) >= 3);
+    expect(deep.length, '3 手以上的将杀太少').toBeGreaterThanOrEqual(10);
+  });
+
+  it('每个对手节点都带解说，且数据自洽', () => {
+    for (const p of PUZZLES) {
+      // 重放主线，记下每个节点的局面
+      const game = new Chess(p.fen);
+      let nodeIndex = 0;
+      for (const ply of p.line) {
+        if (ply.color !== p.side) {
+          /*
+           * **对手节点**：note 是在「这个局面」上算的，
+           * 所以 note.legalCount 必须等于**这个局面**的合法着法数。
+           *
+           * 这条断言能抓住「note 算在了错局面上」这类真 bug ——
+           * 光检查字段非空是抓不住的。
+           */
+          const note = ply.note;
+          expect(note, `关卡 ${p.id} 的对手着法 ${ply.san} 没有解说`).toBeTruthy();
+          const legalCount = game.moves().length;
+          expect(note!.legalCount, `关卡 ${p.id} 的 ${ply.san} 合法着法数对不上`).toBe(legalCount);
+          expect(note!.legalCount).toBeGreaterThanOrEqual(1);
+          /*
+           * 分值与杀棋距离**至少有一个**。
+           *
+           * 杀棋局面里引擎给的是「几手后被将死」，没有分值（null）——
+           * 所以不能一律要求 bestScoreAfter 非空，
+           * 但也不能两个都没有（那就什么事实都没算出来）。
+           */
+          expect(
+            note!.bestScoreAfter !== null || note!.bestMateInAfter !== null,
+            `关卡 ${p.id} 的 ${ply.san} 既没有最佳着法分值也没有杀棋距离`,
+          ).toBe(true);
+          expect(note!.sacrificedCp).toBeGreaterThanOrEqual(0);
+          // 最优着法的分值必须真的最优
+          if (note!.scoreAfter !== null && note!.bestScoreAfter !== null) {
+            expect(note!.bestScoreAfter).toBeGreaterThanOrEqual(note!.scoreAfter);
+          }
+        }
+        // 走完这手，局面推进
+        game.move(ply.san);
+        nodeIndex += 1;
+      }
+      void nodeIndex;
+    }
+  });
+
+  it('解说文本不是空话：有实质信息', () => {
+    for (const p of PUZZLES) {
+      for (const ply of p.line) {
+        if (ply.color === p.side || !ply.note) continue;
+        const text = opponentNoteText(ply.note);
+        expect(text, `关卡 ${p.id} 的 ${ply.san} 解说是空的`).toBeTruthy();
+        expect(text!.length, `关卡 ${p.id} 的 ${ply.san} 解说太短`).toBeGreaterThan(6);
+      }
+    }
+  });
+
+  it('非最优的着法，解说要老实说「不是最优」', () => {
+    // 造一个「非最优」的事实，解说必须如实反映
+    const fake = {
+      legalCount: 5,
+      hopeless: false,
+      isBest: false,
+      mateInAfter: null,
+      scoreAfter: -500,
+      bestSan: 'Kh6',
+      bestScoreAfter: -300,
+      bestMateInAfter: null,
+      sacrificedCp: 0,
+    };
+    const text = opponentNoteText(fake) ?? '';
+    expect(text, '非最优的着法没有说清楚').toContain('不是最优');
+    expect(text).toContain('Kh6');
+  });
+
+  it('唯一合法着法，解说要说明「只有这一着」', () => {
+    const fake = {
+      legalCount: 1,
+      hopeless: false,
+      isBest: true,
+      mateInAfter: null,
+      scoreAfter: -100,
+      bestSan: null,
+      bestScoreAfter: -100,
+      bestMateInAfter: null,
+      sacrificedCp: 0,
+    };
+    const text = opponentNoteText(fake) ?? '';
+    expect(text).toContain('只有这一着');
+  });
+
+  it('已败局面下要说清「在拖时间」，别让玩家以为对手在犯傻', () => {
+    const fake = {
+      legalCount: 7,
+      hopeless: true,
+      isBest: true,
+      mateInAfter: 11,
+      scoreAfter: null,
+      bestSan: null,
+      bestScoreAfter: null,
+      bestMateInAfter: 11,
+      sacrificedCp: 0,
+    };
+    const text = opponentNoteText(fake) ?? '';
+    expect(text, '已败局面下没说明是在拖时间').toContain('最能拖');
+    expect(text).toContain('无解');
+  });
+
+  it('弃子要按棋子说（「丢了一车」而不是「3.2 个兵」）', () => {
+    const fake = {
+      legalCount: 6,
+      hopeless: true,
+      isBest: true,
+      mateInAfter: 7,
+      scoreAfter: -800,
+      bestSan: null,
+      bestScoreAfter: -800,
+      bestMateInAfter: 7,
+      sacrificedCp: 500,
+    };
+    const text = opponentNoteText(fake) ?? '';
+    expect(text).toContain('丢了一车');
+  });
+
+  it('子力计算：局面里每方的总子力', () => {
+    // 白方一后一车一兵（a7 后、e7 车、g1 兵），黑方一王
+    const fen = '8/8/8/8/8/8/Q3R3/4K1P1 w - - 0 1';
+    expect(materialCp(fen, 'w')).toBe(900 + 500 + 100);
+    expect(materialCp(fen, 'b')).toBe(0);
+  });
+
+  it('note 的数据与它声称的结论一致', () => {
+    for (const p of PUZZLES) {
+      for (const ply of p.line) {
+        if (ply.color === p.side || !ply.note) continue;
+        const note = ply.note;
+
+        // 声称「不是最优」时，必须真的给出更好的着法
+        if (!note.isBest) {
+          expect(note.bestSan, `${p.id} ${ply.san} 声称不是最优却没给更好的着法`).toBeTruthy();
+        }
+        // 声称「最优」时，bestSan 就不该另有其人
+        if (note.isBest && note.bestSan) {
+          throw new Error(
+            `${p.id} ${ply.san} 声称最优，bestSan 却指向另一手（${note.bestSan}）—— 自相矛盾`,
+          );
+        }
+        // 声称「无解」（被将死）时，必须有杀棋距离
+        if (note.hopeless && note.mateInAfter !== null) {
+          expect(note.mateInAfter, `${p.id} ${ply.san} 声称无解却没有杀棋距离`).toBeGreaterThan(0);
+        }
+        // 杀棋距离必须是正数（几步能杀）
+        if (note.mateInAfter !== null) {
+          expect(note.mateInAfter).toBeGreaterThan(0);
+        }
+        if (note.bestMateInAfter !== null) {
+          expect(note.bestMateInAfter).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it('「已败」的判定规则：被杀棋，或子力大劣', () => {
+    /*
+     * 这条规则**生成器与单测共用同一份实现**（`isOpponentHopeless`）。
+     *
+     * 为什么要单独测：
+     * 判据里但凡有一处符号写反（`score <= -500` 写成 `score <= 500`），
+     * 后果是**几乎每一条解说都变成「对手已经输定了」** ——
+     * 而单测如果自己写一套判据，测的就是单测自己的写法，抓不到生成器的错。
+     */
+    // 被杀棋 = 无解
+    expect(isOpponentHopeless({ mateInAfter: 7, scoreAfter: -100 })).toBe(true);
+    // 子力大劣（对手视角：负数越大，对手越惨）= 输定
+    expect(isOpponentHopeless({ mateInAfter: null, scoreAfter: -500 })).toBe(true);
+    expect(isOpponentHopeless({ mateInAfter: null, scoreAfter: -900 })).toBe(true);
+    // 还没到那个程度 = 还在拉锯
+    expect(isOpponentHopeless({ mateInAfter: null, scoreAfter: -499 })).toBe(false);
+    expect(isOpponentHopeless({ mateInAfter: null, scoreAfter: 300 })).toBe(false);
+    // 没有分值就下不了结论
+    expect(isOpponentHopeless({ mateInAfter: null, scoreAfter: null })).toBe(false);
+  });
+
+  it('每条解说的「已败」标志都跟它自己的事实对得上', () => {
+    for (const p of PUZZLES) {
+      for (const ply of p.line) {
+        if (ply.color === p.side || !ply.note) continue;
+        const note = ply.note;
+        expect(
+          note.hopeless,
+          `${p.id} ${ply.san} 的「已败」标志与事实对不上` +
+            `（mateInAfter=${note.mateInAfter} scoreAfter=${note.scoreAfter}）`,
+        ).toBe(
+          isOpponentHopeless({
+            mateInAfter: note.mateInAfter,
+            scoreAfter: note.scoreAfter,
+          }),
+        );
+      }
+    }
+  });
 });
 
 describe('残局关卡 · 判定逻辑', () => {
@@ -192,21 +416,27 @@ describe('残局关卡 · 判定逻辑', () => {
    * 这里只管「判定逻辑对不对」。
    */
 
-  /** 某关第一手之外、但**合法**的着法（用来测「走错」） */
-  function aWrongButLegalMove(puzzle: Puzzle): string {
+  /** 某关第一手之外、但**合法**的着法（用来测「走错」）；没有就返回 null */
+  function aWrongButLegalMove(puzzle: Puzzle): string | null {
     const game = new Chess(puzzle.fen);
     const legal = game.moves({ verbose: true }).map((m) => m.san);
     const right = puzzle.line[0];
-    const wrong = legal.find((san) => san !== right.san && !(right.also ?? []).includes(san));
-    if (!wrong) throw new Error(`关卡 ${puzzle.id} 没有可以用来测「走错」的着法`);
-    return wrong;
+    return legal.find((san) => san !== right.san && !(right.also ?? []).includes(san)) ?? null;
   }
 
   it('走对了推进，走错了不推进', () => {
-    const puzzle = PUZZLES[0];
+    /*
+     * 挑一关**有**「错但合法」的着法来测。
+     *
+     * 不是每一关都有 —— 有的残局每一步都算对
+     *（比如对手只有一着可走、玩家也只有一着能走通），
+     * 拿那种关卡测「走错」根本测不到东西。
+     */
+    const puzzle = PUZZLES.find((p) => aWrongButLegalMove(p) !== null);
+    if (!puzzle) throw new Error('题库里没有一关能测「走错」');
     const session = startSession(puzzle);
 
-    const wrong = applyPlayerMove(session, aWrongButLegalMove(puzzle));
+    const wrong = applyPlayerMove(session, aWrongButLegalMove(puzzle) as string);
     expect(wrong.ok, '走错的一步不该被判对').toBe(false);
     expect(wrong.session.ply, '走错了不该推进').toBe(0);
     expect(wrong.session.lastWrong).not.toBeNull();

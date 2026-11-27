@@ -11,4 +11,5 @@ export * from './types';
 export * from './themes';
 export * from './session';
 export * from './progress';
+export * from './notes';
 export { PUZZLES } from './data';

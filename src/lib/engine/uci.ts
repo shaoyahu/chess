@@ -47,6 +47,35 @@ export interface UciBestMove {
   nodes: number;
 }
 
+/**
+ * **MultiPV 的一条候选着法** —— 一次搜索里同时给出的第 k 优着法。
+ *
+ * 为什么需要它：残局关卡要回答「对手为什么这么走」，
+ * 就得知道**同一局面下所有候选着法分别值多少分**。
+ *
+ * 逐个着法单独搜索有两个毛病：
+ *   1. 慢 —— 每个着法一次搜索；
+ *   2. **分数不可比** —— 每次搜索都带着上一遍留下的哈希表残留，
+ *      同一个着法两次搜索能差十几厘兵，于是「这手比那手好 30 厘兵」变成噪声。
+ *
+ * MultiPV 一次搜索给出所有候选，**所有分数出自同一棵搜索树**，
+ * 天生可比 —— 这是解说的数据基础。
+ */
+export interface UciCandidate {
+  /** UCI 着法字符串，例如 "e2e4" / "e7e8q" */
+  uci: string;
+  /** 从 UCI 字符串拆出来的 from / to / promotion */
+  from: string;
+  to: string;
+  promotion?: 'q' | 'r' | 'b' | 'n';
+  /** 分值（厘兵，走子方视角）；有 mate 时是 null */
+  scoreCp: number | null;
+  /** 杀棋距离（手，走子方视角）；不是杀棋局面时是 null */
+  scoreMate: number | null;
+  /** 该候选达到的搜索深度 */
+  depth: number;
+}
+
 /** 搜索参数 */
 export interface UciSearchOptions {
   /** 局面（完整 FEN，含轮到谁走） */
@@ -55,6 +84,24 @@ export interface UciSearchOptions {
   timeMs?: number;
   /** 深度上限 */
   depth?: number;
+  /**
+   * 要同时返回几个候选着法（MultiPV）。
+   *
+   * 不传 = 1（只返回最佳着法）。
+   * 传 N = 返回前 N 优，每条带自己的分值。
+   */
+  multiPv?: number;
+  /**
+   * 搜索前是否**清空哈希表**（`ucinewgame`）。
+   *
+   * 为什么需要：Stockfish 的哈希表跨搜索保留，
+   * 上一遍搜索留下的表项会改变这一遍的剪枝路径 ——
+   * 实测**同一个局面连搜三次，分数能漂二十几厘兵、着法也会变**。
+   *
+   * 离线生成题库必须可复现（同一份题库跑两次要得到同一份 `data.ts`），
+   * 所以生成器一律传 true。
+   */
+  clearHash?: boolean;
   /** 每个请求的硬超时（毫秒）；缺省 timeMs + 10s */
   timeoutMs?: number;
 }
@@ -100,6 +147,13 @@ export interface UciEngineLike {
   start(timeoutMs?: number): Promise<void>;
   /** 算一步着法 */
   search(opts: UciSearchOptions): Promise<UciBestMove>;
+  /**
+   * **一次搜索拿到多个候选着法**（MultiPV）。
+   *
+   * 可选实现 —— 门禁注入的假引擎可以只实现 `search`，
+   * 调用方（`StockfishBackend.analyzeMulti`）要先探测它在不在。
+   */
+  searchMulti?(opts: UciSearchOptions): Promise<UciCandidate[]>;
   /** 下发 setoption */
   setOption(name: string, value: string | number): void;
   /** 结束进程 */
@@ -129,6 +183,16 @@ export class UciEngine implements UciEngineLike {
     nodes: number;
     /** 是否已经因为「找到杀棋」发过 stop */
     mateStopped: boolean;
+    /**
+     * MultiPV 的各行结果（key = multipv 序号）。
+     *
+     * 只在 `searchMulti` 里用；普通 `search` 不填。
+     */
+    multi: Map<number, { uci: string; scoreCp: number | null; scoreMate: number | null; scoreMateBound: number | null; depth: number }> | null;
+    /** MultiPV 请求的着法数 */
+    multiCount: number;
+    /** MultiPV 当前收集到的最大 depth（用来只保留最终那批行） */
+    multiDepth: number | null;
   } | null = null;
 
   constructor(
@@ -250,7 +314,7 @@ export class UciEngine implements UciEngineLike {
       }, hardTimeout);
       if (typeof timer.unref === 'function') timer.unref();
 
-      this.pending = { resolve, reject, timer, scoreCp: null, scoreMate: null, scoreMateBound: null, depth: 0, nodes: 0, mateStopped: false };
+      this.pending = { resolve, reject, timer, scoreCp: null, scoreMate: null, scoreMateBound: null, depth: 0, nodes: 0, mateStopped: false, multi: null, multiCount: 1, multiDepth: null };
 
       this.write(`position fen ${opts.fen}`);
       // depth 与 movetime 可以**同时**给：引擎取先到的那个为准。
@@ -272,6 +336,82 @@ export class UciEngine implements UciEngineLike {
       }
     });
   }
+
+  /**
+   * **一次搜索拿到多个候选着法**（MultiPV）。
+   *
+   * 与逐个着法单独搜索相比：
+   *   - 快一个数量级（一次搜索 vs N 次搜索）；
+   *   - **各候选的分值出自同一棵搜索树，天生可比**。
+   *
+   * 第二条才是关键：残局解说要说「这手比那手好多少」，
+   * 拿分别搜索来的分值去比，比的是噪声。
+   */
+  async searchMulti(opts: UciSearchOptions): Promise<UciCandidate[]> {
+    await this.start();
+    if (!this.alive || !this.child) {
+      throw new UciError('引擎进程不可用');
+    }
+
+    await this.ready();
+    if (this.pending) {
+      throw new UciError('引擎上一次搜索还没结束');
+    }
+
+    const count = Math.max(1, Math.round(opts.multiPv ?? 1));
+    const budget = opts.timeMs ?? 1000;
+    const hardTimeout = opts.timeoutMs ?? budget + DEFAULT_TIMEOUT_SLACK_MS;
+
+    return new Promise<UciCandidate[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending = null;
+        this.write('stop');
+        reject(new UciError(`引擎搜索超时（${hardTimeout}ms）`));
+      }, hardTimeout);
+      if (typeof timer.unref === 'function') timer.unref();
+
+      this.pending = {
+        resolve: () => {},
+        reject,
+        timer,
+        scoreCp: null,
+        scoreMate: null,
+        scoreMateBound: null,
+        depth: 0,
+        nodes: 0,
+        mateStopped: false,
+        multi: new Map(),
+        multiCount: count,
+        multiDepth: null,
+      };
+
+      // MultiPV 是引擎的**全局选项**，改完必须 isready 才生效。
+      this.write(`setoption name MultiPV value ${count}`);
+      this.write('isready');
+      // 清哈希：让同一局面连搜多次得到**逐字相同**的结果（见 clearHash 说明）。
+      if (opts.clearHash) {
+        this.write('ucinewgame');
+        this.write('isready');
+      }
+      this.write(`position fen ${opts.fen}`);
+      const depth = opts.depth !== undefined ? Math.max(1, Math.round(opts.depth)) : null;
+      if (depth !== null) {
+        this.write(`go depth ${depth}`);
+      } else {
+        this.write(`go movetime ${Math.max(1, Math.round(opts.timeMs ?? 1000))}`);
+      }
+
+      // bestmove 到达时由 onLine 调用它收尾
+      this.multiResolve = (rows) => {
+        clearTimeout(timer);
+        this.multiResolve = null;
+        resolve(rows);
+      };
+    });
+  }
+
+  /** MultiPV 请求的收尾回调（bestmove 到达时触发） */
+  private multiResolve: ((rows: UciCandidate[]) => void) | null = null;
 
   /** 发送 setoption（如 UCI_LimitStrength / UCI_Elo / Threads） */
   setOption(name: string, value: string | number): void {
@@ -331,6 +471,43 @@ export class UciEngine implements UciEngineLike {
       if (info.depth !== null) p.depth = info.depth;
       if (info.nodes !== null) p.nodes = info.nodes;
       if (info.scoreCp !== null) p.scoreCp = info.scoreCp;
+
+      /*
+       * MultiPV 收集：**只认最终 depth 的那一批行**。
+       *
+       * 为什么不能一股脑都收：引擎会随着加深不断重报每一行，
+       * 同一个 multipv 序号会被多个 depth 覆盖 ——
+       * 收进来的是「各深度混在一起」的分数，不可比。
+       *
+       * 所以只保留**当前见过的最大 depth** 的那批；
+       * 一旦出现更大的 depth，就把之前那批清掉重来。
+       */
+      if (p.multi) {
+        const mp = parseMultiPvInfo(t);
+        if (mp && mp.depth !== null && mp.uci) {
+          if (p.multiDepth === null || mp.depth > p.multiDepth) {
+            p.multiDepth = mp.depth;
+            p.multi.clear();
+          }
+          if (mp.depth === p.multiDepth) {
+            const prev = p.multi.get(mp.multipv);
+            p.multi.set(mp.multipv, {
+              uci: mp.uci,
+              scoreCp: mp.scoreCp,
+              scoreMate: mp.scoreMate,
+              scoreMateBound: mp.scoreMateBound,
+              depth: mp.depth,
+              // 同一 multipv 序号被重报时，保留「更精确」的那次
+              ...(prev && prev.scoreMate !== null && mp.scoreMate === null
+                ? { scoreMate: prev.scoreMate, scoreMateBound: prev.scoreMateBound }
+                : {}),
+            });
+          }
+        }
+        // MultiPV 模式下**不提前 stop**：还有别的候选要收。
+        return;
+      }
+
       if (isMateInfoLine(t)) {
         p.scoreCp = null;
         /*
@@ -363,6 +540,27 @@ export class UciEngine implements UciEngineLike {
       if (!p) return;
       this.pending = null;
       clearTimeout(p.timer);
+
+      // MultiPV 请求：交回收集到的候选列表
+      if (p.multi) {
+        const rows: UciCandidate[] = [];
+        for (const [, row] of [...p.multi.entries()].sort((a, b) => a[0] - b[0])) {
+          const parsed = parseUciMove(row.uci);
+          if (!parsed) continue;
+          rows.push({
+            uci: row.uci,
+            from: parsed.from,
+            to: parsed.to,
+            ...(parsed.promotion ? { promotion: parsed.promotion } : {}),
+            scoreCp: row.scoreCp,
+            scoreMate: row.scoreMate ?? row.scoreMateBound,
+            depth: row.depth,
+          });
+        }
+        this.multiResolve?.(rows);
+        return;
+      }
+
       const parts = t.split(/\s+/);
       const uci = parts[1] ?? '';
       const parsed = parseUciMove(uci);
@@ -466,6 +664,69 @@ export function parseSearchInfo(line: string): UciSearchInfo {
   }
   const score = /\bscore cp (-?\d+)/.exec(t);
   if (score) out.scoreCp = Number(score[1]);
+  return out;
+}
+
+/**
+ * 一条 info 行里能解析出来的 MultiPV 信息。
+ *
+ * 与 {@link parseSearchInfo} 的区别：多了 **multipv 序号**与 **pv 里的着法**。
+ */
+export interface UciMultiPvInfo {
+  /** 该行的搜索深度 */
+  depth: number | null;
+  /** 第几优（1 = 最佳） */
+  multipv: number;
+  /** pv 里的**第一个**着法（UCI 字符串） */
+  uci: string | null;
+  /** 分值（厘兵，走子方视角）；mate 时为 null */
+  scoreCp: number | null;
+  /** **精确**杀棋距离（手，走子方视角）；不是杀棋局面时为 null */
+  scoreMate: number | null;
+  /** 带界值的杀棋距离（只作兜底） */
+  scoreMateBound: number | null;
+}
+
+/**
+ * 解析一行 MultiPV info。
+ *
+ * ## 为什么要把 bound 值单独拆出来
+ *
+ * Stockfish 的 `score mate N` 带 `upperbound`/`lowerbound` 时，
+ * N 只是**搜索窗口的界**，不是确切的杀棋距离
+ * （SF 找到杀棋后往往先报一个 bound，再报确切值）。
+ *
+ * 解说里要说「这手把杀棋拖到第 N 手」——
+ * 拿界值当确切值说出去，数字就是错的。
+ * 所以精确值与界值必须分开，界值只作兜底。
+ */
+export function parseMultiPvInfo(line: string): UciMultiPvInfo | null {
+  const t = line.trim();
+  if (!t.startsWith('info ')) return null;
+
+  const depthM = /(?:^|\s)depth (\d+)/.exec(t);
+  const mpM = /\bmultipv (\d+)/.exec(t);
+  const pvM = /\bpv (\S+)/.exec(t);
+  if (!depthM || !mpM || !pvM) return null;
+
+  const out: UciMultiPvInfo = {
+    depth: Number(depthM[1]),
+    multipv: Number(mpM[1]),
+    uci: pvM[1],
+    scoreCp: null,
+    scoreMate: null,
+    scoreMateBound: null,
+  };
+
+  const cpM = /\bscore cp (-?\d+)/.exec(t);
+  const mateM = /\bscore mate (-?\d+)/.exec(t);
+  if (mateM) {
+    const n = Number(mateM[1]);
+    if (isBoundedScoreLine(t)) out.scoreMateBound = n;
+    else out.scoreMate = n;
+  } else if (cpM) {
+    out.scoreCp = Number(cpM[1]);
+  }
   return out;
 }
 

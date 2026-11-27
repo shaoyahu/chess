@@ -17,6 +17,7 @@
     "deploy:check": "tsx scripts/check-deploy.ts",
     "assets:pieces": "tsx --tsconfig tsconfig.scripts.json scripts/generate-pieces.ts",
     "gen:endgame-puzzles": "tsx scripts/generate-endgame-puzzles.ts",
+    "audit:endgame-puzzles": "tsx scripts/audit-endgame-puzzles.ts",
     "preview:appearance": "tsx --tsconfig tsconfig.scripts.json scripts/preview-piece-appearance.ts",
     "assets:silhouette": "tsx scripts/dump-piece-silhouette.ts artifacts/silhouette 0 game",
     "verify": "npm run typecheck && npm run test && npm run licenses && npm run contrast && npm run verify:ws-only && npm run verify:engine && npm run verify:stockfish",

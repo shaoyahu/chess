@@ -20,6 +20,7 @@ import {
   UciEngine,
   parseUciMove,
   parseSearchInfo,
+  parseMultiPvInfo,
   isMateInfoLine,
   findSystemStockfish,
   type UciBestMove,
@@ -273,6 +274,70 @@ async function main(): Promise<void> {
         isMateInfoLine('info depth 25 seldepth 30 score cp 13 nodes 100 pv e2e4') === false &&
         isMateInfoLine('bestmove e2e4') === false,
       'mate/普通行判定',
+    );
+  }
+
+  /*
+   * ---------- S4c：MultiPV 行的解析（bound 值必须分开） ----------
+   *
+   * 这一条守着**解说数字的正确性**：
+   * `score mate N` 带 upperbound/lowerbound 时，N 只是搜索窗口的界，
+   * 不是确切的杀棋距离。拿界值当确切值说出去，解说里的「拖到第 N 手」就是错的。
+   *
+   * 精确值（scoreMate）与界值（scoreMateBound）必须分开存。
+   */
+  {
+    const exact = parseMultiPvInfo(
+      'info depth 12 multipv 1 score cp -450 nodes 100 pv e2e4',
+    );
+    check(
+      'S4',
+      'MultiPV 行能解析出 depth / multipv / pv 里的着法',
+      exact?.depth === 12 && exact?.multipv === 1 && exact?.uci === 'e2e4',
+      JSON.stringify(exact),
+    );
+    check(
+      'S4',
+      'MultiPV 的 cp 分值正常解析',
+      exact?.scoreCp === -450 && exact?.scoreMate === null && exact?.scoreMateBound === null,
+      JSON.stringify(exact),
+    );
+
+    const exactMate = parseMultiPvInfo(
+      'info depth 12 multipv 2 score mate -7 nodes 100 pv d1h5',
+    );
+    check(
+      'S4',
+      '不带 bound 的 mate 行 → 杀棋距离进 scoreMate（确切值）',
+      exactMate?.scoreMate === -7 && exactMate?.scoreMateBound === null,
+      JSON.stringify(exactMate),
+    );
+
+    const bounded = parseMultiPvInfo(
+      'info depth 12 multipv 3 score mate -5 lowerbound nodes 100 pv a1a2',
+    );
+    check(
+      'S4',
+      '带 lowerbound 的 mate 行 → 界值进 scoreMateBound，scoreMate 保持 null',
+      bounded?.scoreMate === null && bounded?.scoreMateBound === -5,
+      JSON.stringify(bounded),
+    );
+
+    const boundedUpper = parseMultiPvInfo(
+      'info depth 12 multipv 1 score mate 3 upperbound nodes 100 pv h1h2',
+    );
+    check(
+      'S4',
+      '带 upperbound 的 mate 行同样只进兜底字段',
+      boundedUpper?.scoreMate === null && boundedUpper?.scoreMateBound === 3,
+      JSON.stringify(boundedUpper),
+    );
+
+    check(
+      'S4',
+      '非 MultiPV 行（没有 multipv 字段）解析不出来',
+      parseMultiPvInfo('info depth 12 score cp -450 nodes 100 pv e2e4') === null,
+      '期望 null',
     );
   }
 

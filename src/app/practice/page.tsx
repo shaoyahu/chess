@@ -85,6 +85,7 @@ import {
   loadProgress,
   markCurrent,
   markSolved,
+  opponentNoteText,
   playerMoveCount,
   saveProgress,
   sessionPosition,
@@ -243,6 +244,8 @@ export default function PracticePage() {
   const [hintMove, setHintMove] = useState<{ from: string; to: string } | null>(null);
   /** 走错的那一手（棋盘上标红） */
   const [wrongMove, setWrongMove] = useState<{ from: string; to: string } | null>(null);
+  /** 主题筛选（null = 全部） */
+  const [puzzleTheme, setPuzzleTheme] = useState<string | null>(null);
 
   // 存档在挂载后读 —— 服务端渲染时 localStorage 还没有
   useEffect(() => {
@@ -262,6 +265,26 @@ export default function PracticePage() {
     () => PUZZLES.find((p) => p.id === puzzleId) ?? PUZZLES[0] ?? null,
     [puzzleId],
   );
+
+  /**
+   * 主题分类统计 —— 筛选栏上每个类别有几关。
+   *
+   * 按**出现关数**降序排：多的类别排前面。
+   * 同数按主题键排，保证顺序稳定。
+   */
+  const puzzleThemeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of PUZZLES) counts.set(p.theme, (counts.get(p.theme) ?? 0) + 1);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([theme, count]) => ({ theme, count, label: themeLabel(theme) }));
+  }, []);
+
+  /** 筛选后的关卡列表 */
+  const visiblePuzzles = useMemo(
+    () => (puzzleTheme ? PUZZLES.filter((p) => p.theme === puzzleTheme) : PUZZLES),
+    [puzzleTheme],
+  );
   /** 棋盘该显示的局面 */
   const puzzleFen = session ? sessionPosition(session) : '';
   /** 上一步的箭头（对手那手自动走掉时也画） */
@@ -270,6 +293,29 @@ export default function PracticePage() {
     lastPuzzleStep && lastPuzzleStep.from && lastPuzzleStep.to
       ? { from: lastPuzzleStep.from, to: lastPuzzleStep.to }
       : null;
+
+  /**
+   * **对手着法的解说记录** —— 右栏常驻显示。
+   *
+   * 只收**已经走过**的对手着法：
+   *   - 走一步之后对手那手自动接上，这时才解释它为什么这么走；
+   *   - 不能预告对手下一手会走哪（界面不提前摊开系统的内部状态）。
+   *
+   * 每条记录 = 对手这手 + 一句为什么。
+   */
+  const opponentNotes = useMemo(() => {
+    if (!session) return [];
+    const out: { san: string; text: string }[] = [];
+    for (let i = 0; i < session.ply; i += 1) {
+      const ply = session.puzzle.line[i];
+      if (!ply || ply.color === session.puzzle.side) continue;
+      if (!ply.note) continue;
+      const text = opponentNoteText(ply.note);
+      if (!text) continue;
+      out.push({ san: ply.san, text });
+    }
+    return out;
+  }, [session]);
 
   /** 换一关 */
   const selectPuzzle = useCallback((id: string) => {
@@ -771,40 +817,68 @@ export default function PracticePage() {
                   {progress.solved.length} / {PUZZLES.length}
                 </span>
               </div>
-              <div className="puzzle-list">
-                {PUZZLES.map((item, i) => (
+              {/* 分类筛选 —— 300 关平铺太长，按主题分桶 */}
+              <div className="lesson-filter puzzle-filter">
+                <button
+                  className={`lesson-filter-chip${puzzleTheme === null ? ' active' : ''}`}
+                  onClick={() => setPuzzleTheme(null)}
+                  aria-pressed={puzzleTheme === null}
+                >
+                  全部
+                  <span className="lesson-filter-count">{PUZZLES.length}</span>
+                </button>
+                {puzzleThemeCounts.map((item) => (
                   <button
-                    key={item.id}
-                    className={`puzzle-row${item.id === puzzleId ? ' active' : ''}`}
-                    onClick={() => selectPuzzle(item.id)}
-                    aria-pressed={item.id === puzzleId}
+                    key={item.theme}
+                    className={`lesson-filter-chip${puzzleTheme === item.theme ? ' active' : ''}`}
+                    onClick={() => setPuzzleTheme(item.theme)}
+                    aria-pressed={puzzleTheme === item.theme}
+                    title={item.label}
+                    /* 门禁靠这个属性定位按钮 —— 标题是中文，主题键才是稳定的 */
+                    data-theme={item.theme}
                   >
-                    <span className="puzzle-row-no">{i + 1}</span>
-                    <span className="puzzle-row-main">
-                      <span className="puzzle-row-name">{themeLabel(item.theme)}</span>
-                      <span className="puzzle-row-goal">{puzzleGoalText(item)}</span>
-                    </span>
-                    <span
-                      className="puzzle-row-stars"
-                      aria-label={`难度 ${item.difficulty} / 5`}
-                      title={`难度 ${item.difficulty} / 5`}
-                    >
-                      {Array.from({ length: 5 }, (_, k) => (
-                        <Star
-                          key={k}
-                          size={11}
-                          fill={k < item.difficulty ? 'currentColor' : 'none'}
-                          aria-hidden="true"
-                        />
-                      ))}
-                    </span>
-                    {progress.solved.includes(item.id) && (
-                      <span className="puzzle-row-done">
-                        <Check size={13} aria-hidden="true" />
-                      </span>
-                    )}
+                    {item.label}
+                    <span className="lesson-filter-count">{item.count}</span>
                   </button>
                 ))}
+              </div>
+              <div className="puzzle-list">
+                {visiblePuzzles.map((item) => {
+                  const idx = PUZZLES.findIndex((x) => x.id === item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      className={`puzzle-row${item.id === puzzleId ? ' active' : ''}`}
+                      onClick={() => selectPuzzle(item.id)}
+                      aria-pressed={item.id === puzzleId}
+                    >
+                      <span className="puzzle-row-no">{idx + 1}</span>
+                      <span className="puzzle-row-main">
+                        <span className="puzzle-row-name">{themeLabel(item.theme)}</span>
+                        <span className="puzzle-row-goal">{puzzleGoalText(item)}</span>
+                      </span>
+                      <span
+                        className="puzzle-row-stars"
+                        aria-label={`难度 ${item.difficulty} / 5`}
+                        title={`难度 ${item.difficulty} / 5`}
+                      >
+                        {Array.from({ length: 5 }, (_, k) => (
+                          <Star
+                            key={k}
+                            size={11}
+                            fill={k < item.difficulty ? 'currentColor' : 'none'}
+                            aria-hidden="true"
+                          />
+                        ))}
+                      </span>
+                      {progress.solved.includes(item.id) && (
+                        <span className="puzzle-row-done">
+                          <Check size={13} aria-hidden="true" />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -894,6 +968,28 @@ export default function PracticePage() {
                   {session.solved && (
                     <div className="puzzle-status done" role="status">
                       通关
+                    </div>
+                  )}
+
+                  {/*
+                   * **对手着法解说** —— 常驻在右栏。
+                   *
+                   * 残局里对手已败时，它的最优应手常常「看着像白送」，
+                   * 实际是把杀棋拖最久 —— 不解释的话玩家会以为对手在犯傻。
+                   *
+                   * 只在对手**已经走过**之后出现：不预告对手下一手。
+                   */}
+                  {opponentNotes.length > 0 && (
+                    <div className="puzzle-notes">
+                      <div className="puzzle-notes-head">对手怎么走</div>
+                      <ul className="puzzle-notes-list">
+                        {opponentNotes.map((n, i) => (
+                          <li key={`${n.san}-${i}`}>
+                            <span className="puzzle-notes-san">{n.san}</span>
+                            <span className="puzzle-notes-text">{n.text}</span>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
 
