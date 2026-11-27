@@ -1,0 +1,23 @@
+# 局域网国际象棋 —— 机器健康采样定时器
+#
+# 装到：/etc/systemd/system/lan-chess-watchdog.timer
+# 启用：systemctl daemon-reload && systemctl enable --now lan-chess-watchdog.timer
+# 看下一次什么时候跑：systemctl list-timers lan-chess-watchdog.timer
+#
+# 为什么是 5 分钟：
+#   一天 288 条 —— 足够看出「内存是一路涨上去的」还是「某一瞬间爆的」，
+#   又不至于把 journal 撑爆（一条大约 150 字节）。
+#
+# 为什么开机后等 3 分钟才第一次采：
+#   刚开机那会儿服务还在起、nginx 在等 DNS，采到的数没有代表性。
+[Unit]
+Description=每 5 分钟采一次机器健康指标（内存 / 负载 / 磁盘）
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=lan-chess-watchdog.service
+
+[Install]
+WantedBy=timers.target

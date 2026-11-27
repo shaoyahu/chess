@@ -1,0 +1,17 @@
+# 局域网国际象棋 —— 机器健康采样（systemd 一次性任务）
+#
+# 装到：/etc/systemd/system/lan-chess-watchdog.service
+# 启用：systemctl daemon-reload && systemctl enable --now lan-chess-watchdog.timer
+# 看结果：journalctl -u lan-chess-watchdog.service -n 20 --no-pager
+#
+# 采样脚本在仓库里（deploy/watchdog.sh），服务器上是 /opt/lan-chess/deploy/watchdog.sh
+# —— 所以它跟着 `git pull` 一起更新，不用单独维护。
+[Unit]
+Description=局域网国际象棋 · 机器健康采样（内存 / 负载 / 磁盘 → journal）
+After=lan-chess-ws.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/lan-chess/deploy/watchdog.sh
+StandardOutput=journal
+StandardError=journal

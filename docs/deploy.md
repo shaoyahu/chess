@@ -975,8 +975,17 @@ last -x reboot | head -10
 > 2. ~~**把大厅广播从 O(n²) 降下来**~~ —— 同一个理由。
 >
 > 只剩一条还留着，因为它保护的是**这台机器上的另外 4 个站点**，不是我们的规模：
-> 3. **给 systemd 单元加内存上限**：`MemoryMax=256M` —— 让这个服务**自己**先死，
->    而不是把整台机器和别的线上站点一起拖下水。（**还没做**，等球球点头。）
+> 3. **给 systemd 单元加内存上限** ✅ **已做（2026-11-27）** —— `MemoryMax=700M`，
+>    装在 `deploy/lan-chess-ws.service` 里。
+>    **数值是实测推导的，不是拍脑袋**：空闲 67MB；开一局 AI 对局 594MB
+>    （WASM 版 Stockfish 子进程占 472MB，且**玩完一局不释放**）。
+>    所以~~256M~~会**把每一局 AI 对局都打死** —— 改成实测峰值 + 余量 = 700M。
+>    想把上限压回 256M，得先装**原生** Stockfish（150~200MB，见 §7）。
+>
+> 4. ✅ **加极简监控**（2026-11-27 拍板要）—— `deploy/lan-chess-watchdog.sh`
+>    + `lan-chess-watchdog.service` + `.timer`，**每 5 分钟**采一次
+>    （可用内存 / swap / 负载 / 本服务 cgroup 内存 / 最占内存的三个进程 / 磁盘）
+>    写进 journal。装法见 §18.9。
 
 ### 18.7 重启后已经做的处置（2026-11-27）
 
@@ -1011,9 +1020,49 @@ last -x reboot | head -10
 4. 唯一一次真正的压测是 **11-23**（那次有 OOM 记录，是另一回事，见 §2）。
    **这条路的最终处置：不再压测**（球球 2026-11-27 拍板，§2、§17.11、§18.6）。
 
-**还欠的**：这台机器**没有监控** —— 内存/CPU/磁盘曲线都没有，
-所以 §18.2 的 C 那一栏永远填不上。要下次能定死死因，先把监控补上
-（哪怕只是每 5 分钟采一次 `free -m` / `ps` 写到 journal）。
+### 18.9 监控与内存上限（2026-11-27 装好）
+
+**① 内存上限**：`deploy/lan-chess-ws.service` 里加了 `MemoryMax=700M`。
+数值是**实测推导**的：
+
+| 场景 | 本服务 cgroup 内存 |
+|---|---|
+| 空闲 | **67MB** |
+| 开一局 AI 对局（引擎子进程在同一个 cgroup 里） | **594MB** ← WASM 版 Stockfish 占 472MB |
+| 玩完那一局之后 | **582MB**（引擎常驻，**不还**） |
+
+⚠️ **两个坑**：
+1. `MemoryMax=256M`（我最初提的数字）**会打死每一局 AI 对局** —— 实测峰值 594MB。
+   所以改成 700M（实测峰值 + 余量），仍然把本服务限制在整机（约 1586MB）的 44% 以内。
+2. **玩一局 AI 对局，整机可用内存会从 725MB 掉到 264MB**（WASM Stockfish 的哈希吃 472MB，
+   而且玩完还常驻）。要彻底解决得装**原生** Stockfish（150~200MB，见 §7），
+   或者玩完 AI 局重启一下服务把引擎放掉。
+
+**② 极简监控**（球球拍板要）：每 5 分钟采一次，写进 journal。
+
+```bash
+# 安装（脚本在仓库里，跟着 git pull 一起更新）
+sudo cp /opt/lan-chess/deploy/lan-chess-watchdog.service /etc/systemd/system/
+sudo cp /opt/lan-chess/deploy/lan-chess-watchdog.timer  /etc/systemd/system/
+sudo chmod +x /opt/lan-chess/deploy/watchdog.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now lan-chess-watchdog.timer
+
+# 看采样结果
+journalctl -u lan-chess-watchdog.service -n 20 --no-pager
+# 长一点的趋势（内存是不是一路涨上去的）
+journalctl -u lan-chess-watchdog.service --since "-1 day" --no-pager | tail -50
+```
+
+采到的一行长这样：
+
+```
+[watch] mem_total=1586MB mem_avail=264MB swap_used=0MB/4095KB load=0.05/0.08/0.09 chess_ws=582MB top: node=472MB node=327MB node=99MB disk=38%
+```
+
+**它能回答的问题**（就是上次定不下来的那些）：
+内存是不是一路涨上去的？某个进程是不是突然吃了一大块？
+是不是 swap 被用满了？根分区是不是快满了？负载是不是有尖峰？
 
 
 
