@@ -38,5 +38,5 @@ top3=$(ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -3 |
 disk_pct=$(df -P / 2>/dev/null | awk 'NR==2 { gsub("%","",$5); print $5 }')
 
 echo "[watch] mem_total=$((mem_total_kb / 1024))MB mem_avail=$((mem_avail_kb / 1024))MB" \
-  "swap_used=$(( (swap_total_kb - swap_free_kb) / 1024 ))MB/${swap_total_kb}KB" \
+  "swap_used=$(( (swap_total_kb - swap_free_kb) / 1024 ))MB/swap_total=$((swap_total_kb / 1024))MB" \
   "load=$load chess_ws=${svc_mb}MB top: ${top3}disk=${disk_pct}%"
