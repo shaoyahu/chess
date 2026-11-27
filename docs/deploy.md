@@ -1044,7 +1044,6 @@ last -x reboot | head -10
 # 安装（脚本在仓库里，跟着 git pull 一起更新）
 sudo cp /opt/lan-chess/deploy/lan-chess-watchdog.service /etc/systemd/system/
 sudo cp /opt/lan-chess/deploy/lan-chess-watchdog.timer  /etc/systemd/system/
-sudo chmod +x /opt/lan-chess/deploy/watchdog.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now lan-chess-watchdog.timer
 
@@ -1053,6 +1052,10 @@ journalctl -u lan-chess-watchdog.service -n 20 --no-pager
 # 长一点的趋势（内存是不是一路涨上去的）
 journalctl -u lan-chess-watchdog.service --since "-1 day" --no-pager | tail -50
 ```
+
+> ⚠️ **不要在服务器上 `chmod +x` 这个脚本** —— 可执行位已经**提交进仓库**了（100755）。
+> 服务器上手改模式会被 git 看成「本地修改」，**下一次 `git pull` 就被挡住**
+> （模式变更也算本地修改）。真要 chmod，先 `git checkout -- deploy/watchdog.sh` 还原。
 
 采到的一行长这样：
 
