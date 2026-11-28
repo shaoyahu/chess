@@ -76,19 +76,28 @@ StandardError=journal
 #   空闲 67MB / 开一局 AI 对局 594MB（WASM 版引擎一个就占 472MB）
 #   → 256M 会把每一局 AI 对局都打死，所以定 700M。
 #
-# 2026-11-28 换成**原生 Stockfish 19** 后重新实测（这台机器）：
+# 2026-11-28 换成**原生 Stockfish 19** + 哈希 16MB 后重新实测（这台机器）：
 #   引擎 anon：117MB（哈希 64MB）→ 74.5MB（哈希 16MB）
-#   引擎 file：~98MB（103MB 二进制里 NNUE 那些页，**内核可回收**）
-#   服务 cgroup 峰值：anon ~187MB / file ~242MB / 合计 ~480MB
+#   服务 cgroup 峰值：**351MB**（anon 202MB + file 149MB）
+#   实测：256M 会被 cgroup OOM killer 打死引擎；320M 同样被打死；384M 稳。
+#   → 定 384M = 实测峰值 351MB + 余量，比原来的 700M 降了 45%。
 #
-# 定 256M 的依据：anon ~187MB + 内核开销 ~8MB = ~195MB，
-# 剩下 ~60MB 给 file 缓存 —— 内核会优先回收 file 缓存
-# （引擎二进制页、node_modules 页缓存都能丢，丢了只是变慢，不会出错）。
-# 这就是「256M 压得回去」的全部依据，**不是拍脑袋**。
+# ⚠️ **为什么还压不到 256M**（不是参数问题，是进程结构问题）：
+#   这个 cgroup 里跑着**两套完整的 tsx 栈** ——
+#     ① 主服务：node(tsx cli) + node(实际服务) + esbuild 服务
+#     ② 引擎 worker：`src/server/engine-pool.ts` 会 spawn 独立的
+#        `engine-worker.ts` 子进程，又是 node(tsx cli) + node + esbuild
+#     ③ 再加 stockfish 本体
+#   开一局 AI 对局时 cgroup 里是 **7 个进程**，RSS 合计约 460MB。
+#   anon 峰值 202MB 里，**两套 tsx 的 esbuild + 重复的 node 运行时**占了大头。
 #
-# ⚠️ 代价：内存吃紧时引擎的 NNUE 页会被回收再读盘，
-#    AI 落子会变慢。要更快就把 STOCKFISH_HASH_MB 调大、MemoryMax 调高。
-MemoryMax=256M
+#   要真压到 256M，得去掉 tsx 这一层（预编译成 JS 直接用 node 跑，
+#   或写一个 @/ 别名解析 loader），大约能省 130MB RSS。
+#   那是一次**结构性改动**（换掉运行时），不是改配置，所以没顺手做。
+#
+# ⚠️ 代价：内存吃紧时引擎的 NNUE 页会被回收再读盘，AI 落子会变慢。
+#    要更快就把 STOCKFISH_HASH_MB 调大、MemoryMax 调高。
+MemoryMax=384M
 
 # 基本加固：不让提权，/tmp 私有
 NoNewPrivileges=true

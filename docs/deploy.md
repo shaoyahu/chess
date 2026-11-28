@@ -294,6 +294,50 @@ Environment=STOCKFISH_THREADS=2                       # 线程数
 
 优先级：**显式传参 > 环境变量 > 内置默认值**（有单测钉住，见 `tests/engine-options.test.ts`）。
 
+### 7.3 为什么 256M 还压不上去（2026-11-28 实测出来的，不是猜的）
+
+换成原生引擎后按理说 256M 应该够了。**实测不是那么回事**：
+
+| MemoryMax | 结果 |
+|---|---|
+| 256M | ❌ **cgroup OOM killer 打死引擎**（`constraint=CONSTRAINT_MEMCG`），AI 局中途服务被杀 |
+| 320M | ❌ 同样被打死 |
+| **384M** | ✅ 稳，实测峰值 cgroup **351MB**（anon 202MB + file 149MB） |
+
+**差的不是参数，是进程结构**。开一局 AI 对局时，服务 cgroup 里是 **7 个进程**：
+
+```
+① 主服务      node(tsx cli) 50MB + node(实际服务) 103MB + esbuild 服务 16MB
+② 引擎 worker node(tsx cli) 43MB + node(实际 worker) 85MB + esbuild 服务 10MB
+③ 引擎本体    stockfish ~160MB（哈希 16MB）
+```
+
+**两套完整的 tsx 栈** —— 因为 `src/server/engine-pool.ts` 会 spawn 一个独立的
+`src/server/engine-worker.ts` 子进程，**那个子进程也是用 tsx 起的**，
+于是又多了一套 node 运行时 + esbuild 服务。
+
+要压到 256M，得去掉 tsx 这一层，二选一：
+
+1. **预编译成 JS**（用仓库里已有的 esbuild 在本地打包好再传上去）——
+   `ExecStart` 改成 `node dist/server-ws.js`，引擎 worker 同理。
+   约省 130MB RSS。代价：部署多一步「本地构建 + 传产物」，
+   而且**跑的和源码不是同一个东西**（这类漂移正是本项目一直在防的）。
+2. **写一个 `@/` 别名解析 loader**（node 的 `module.register()`），
+   让 node 直接用 `--experimental-strip-types` 跑 .ts。
+   不用构建产物，但要处理「ESM 必须带扩展名」这条硬规则。
+
+**两条都是结构性改动**，不是改配置能解决的，所以没顺手做 ——
+要做得单独排一轮，并且要有门禁兜住。
+
+### 7.4 现在这台机器上的实际取值
+
+```
+MemoryMax=384M              # 实测峰值 351MB + 余量（比原来的 700M 降 45%）
+Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
+Environment=STOCKFISH_HASH_MB=16
+```
+
+
 
 ## 8. 数据与持久化
 
@@ -1105,12 +1149,12 @@ last -x reboot | head -10
 **① 内存上限**：`deploy/lan-chess-ws.service` 里加了 `MemoryMax`。
 数值是**实测推导**的，**引擎换了就得重算**：
 
-| 场景 | WASM 版（2026-11-27 实测） | 原生 Stockfish 19（2026-11-28 实测） |
+| 场景 | WASM 版（2026-11-27 实测） | 原生 Stockfish 19 + 哈希 16MB（2026-11-28 实测） |
 |---|---|---|
-| 空闲 | 67MB | ~104MB |
-| 开一局 AI 对局 | **594MB**（引擎占 472MB） | **~480MB**（引擎 330MB：anon 117 + file 98） |
-| 玩完那一局之后 | 582MB（引擎常驻，**不还**） | ~480MB（同样常驻） |
-| 引擎哈希调成 16MB 之后 | — | 引擎 anon 117 → **74.5MB** |
+| 空闲 | 67MB | **78MB** |
+| 开一局 AI 对局（峰值） | **594MB**（引擎占 472MB） | **351MB**（anon 202 + file 149；引擎本体 160MB） |
+| 玩完那一局之后 | 582MB（引擎常驻，**不还**） | **78MB**（引擎 worker 空闲后自己退了） |
+| 引擎哈希 64 → 16MB | — | 引擎 anon 117 → **74.5MB**（省 42.6MB） |
 
 ⚠️ **两个坑**：
 1. `MemoryMax=256M` 在** WASM 版**下**会打死每一局 AI 对局** —— 实测峰值 594MB。
