@@ -56,13 +56,18 @@ Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
 # 本机开发不用设，走默认的 64MB。
 Environment=STOCKFISH_HASH_MB=16
 
+# 引擎线程数。这台机器只有 **2 核**，还跑着另外 4 个线上站点 ——
+# 引擎不该把两个核都占了。实测改成 1 线程后**AI 落子没变慢**
+#（难度是 Elo + 深度上限封顶的，不是时间封顶），但能给同机别的服务让出一个核。
+Environment=STOCKFISH_THREADS=1
+
 # 改这里：node 的绝对路径（which node 查）。
 #
 # ⚠️ **不要用 tsx 跑这个入口** —— tsx 每次要拉起一整套运行时
 # （一个 tsx 的 node 运行时 + 一个常驻的 esbuild 服务，约 66MB RSS），
 # 而服务端还会 spawn 一个独立的引擎 worker 子进程，**那个也是用 tsx 起的**，
-# 于是开一局 AI 对局时 cgroup 里是 7 个进程、RSS 合计约 460MB，
-# 内存上限压不到 256M（实测 256M / 320M 都会被 cgroup OOM killer 打死引擎）。
+# 于是开一局 AI 对局时 cgroup 里是 **7 个进程**（去掉 tsx 后降到 **3 个**，
+# 峰值 351MB → 333MB）。
 #
 # 现在用的是 node 自带的 TypeScript 支持（22.18+ 默认开启类型剥离，
 # `--experimental-transform-types` 连 enum、参数属性也支持），
@@ -88,24 +93,22 @@ StandardError=journal
 #   空闲 67MB / 开一局 AI 对局 594MB（WASM 版引擎一个就占 472MB）
 #   → 256M 会把每一局 AI 对局都打死，所以定 700M。
 #
-# 2026-11-28 换成**原生 Stockfish 19** + 哈希 16MB 后重新实测（这台机器）：
-#   引擎 anon：117MB（哈希 64MB）→ 74.5MB（哈希 16MB）
-#   服务 cgroup 峰值：**351MB**（anon 202MB + file 149MB）
-#   实测：256M 会被 cgroup OOM killer 打死引擎；320M 同样被打死；384M 稳。
-#   → 定 384M = 实测峰值 351MB + 余量，比原来的 700M 降了 45%。
+# 2026-11-28 换成**原生 Stockfish 19** + 哈希 16MB + 去掉 tsx 后重新实测：
+#   空闲（还没开过 AI 局）：106MB（anon 73MB），cgroup 里 **1 个进程**
+#   开一局 AI 对局（峰值）：**333MB**（anon 213MB + file 120MB），**3 个进程**
+#     ① 主服务 node   ② 引擎 worker node   ③ stockfish
+#   内存上限实测：256M ✗ / 272M ✗ / 288M ✗ / 320M ✗ / **384M ✓**（余量 51MB）
 #
-# ⚠️ **为什么还压不到 256M**（不是参数问题，是进程结构问题）：
-#   这个 cgroup 里跑着**两套完整的 tsx 栈** ——
-#     ① 主服务：node(tsx cli) + node(实际服务) + esbuild 服务
-#     ② 引擎 worker：`src/server/engine-pool.ts` 会 spawn 独立的
-#        `engine-worker.ts` 子进程，又是 node(tsx cli) + node + esbuild
-#     ③ 再加 stockfish 本体
-#   开一局 AI 对局时 cgroup 里是 **7 个进程**，RSS 合计约 460MB。
-#   anon 峰值 202MB 里，**两套 tsx 的 esbuild + 重复的 node 运行时**占了大头。
+# ⚠️ **为什么 256M 够不着**（不是参数问题）：
+#   引擎**搜索时**的 anon 峰值就有 ~213~253MB（跟哈希表大小、线程数都无关 ——
+#   实测 Hash 16/4MB、2 线程/1 线程，峰值都在 250MB 上下）。
+#   加上内核开销（页表、slab 等约 8MB）就已经 260MB 上下，
+#   256M 的上限**连 file 缓存一点都不留也装不下** —— 数学上就不可能。
 #
-#   要真压到 256M，得去掉 tsx 这一层（预编译成 JS 直接用 node 跑，
-#   或写一个 @/ 别名解析 loader），大约能省 130MB RSS。
-#   那是一次**结构性改动**（换掉运行时），不是改配置，所以没顺手做。
+#   去掉 tsx 确实有用（进程 7 → 3，峰值 351MB → 333MB），
+#   但**压不到 256M** —— 真正的大头是引擎搜索本身的内存。
+#   要再往下压，得动引擎本身（比如把引擎并进主进程，省掉 worker 那份 node 运行时），
+#   那是架构改动，得单独排一轮。
 #
 # ⚠️ 代价：内存吃紧时引擎的 NNUE 页会被回收再读盘，AI 落子会变慢。
 #    要更快就把 STOCKFISH_HASH_MB 调大、MemoryMax 调高。

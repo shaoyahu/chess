@@ -272,8 +272,8 @@ sudo systemctl edit lan-chess-ws     # 加 Environment=STOCKFISH_PATH=/usr/local
 
 | | npm 的 WASM 版 | 原生 Stockfish 19 |
 |---|---|---|
-| 引擎进程 RSS | 472MB | 330MB（其中 anon 117MB / file 98MB） |
-| 开一局 AI 对局时服务 cgroup 峰值 | 594MB | **351MB**（哈希调成 16MB 之后；哈希 64MB 时约 480MB） |
+| 引擎进程 RSS | 472MB | ~255MB（搜索时；空闲时 145MB = anon 69 + file 76） |
+| 开一局 AI 对局时服务 cgroup 峰值 | 594MB | **333MB**（哈希 16MB、1 线程、且已去掉 tsx；见 §7.3） |
 | 玩完一局之后 | 582MB（**不释放**） | ~340MB（**同样不释放**） |
 
 **原生版赢在 anon（不可回收的那部分）**：WASM 版的 472MB 基本全是堆；
@@ -294,48 +294,65 @@ Environment=STOCKFISH_THREADS=2                       # 线程数
 
 优先级：**显式传参 > 环境变量 > 内置默认值**（有单测钉住，见 `tests/engine-options.test.ts`）。
 
-### 7.3 为什么 256M 还压不上去（2026-11-28 实测出来的，不是猜的）
+### 7.3 内存上限能压到多少（2026-11-28 一轮实测到底）
 
-换成原生引擎后按理说 256M 应该够了。**实测不是那么回事**：
+目标是 256M。**实测结论：256M 够不着，384M 是能跑的值。**
+下面是完整的数据链，不是估算：
+
+#### 已经做到的（换引擎 + 去掉 tsx）
+
+| | 换引擎前（WASM 版 + tsx） | 现在（原生 SF 19 + node 类型剥离） |
+|---|---|---|
+| AI 局时 cgroup 进程数 | **7 个** | **3 个** |
+| AI 局时峰值 cgroup | 351MB | **333MB**（anon 213 + file 120） |
+| 引擎进程 RSS | 472MB（WASM 版） | ~255MB（原生 SF 19） |
+
+去掉 tsx 的做法：node 22.18+ 自带 TypeScript 类型剥离
+（`--experimental-transform-types` 连 enum、参数属性都支持），
+不需要 esbuild；新增 `scripts/ts-loader.mjs` + `scripts/ts-resolver.mjs`
+补 node ESM 解析器缺的两样：**文件扩展名**和 tsconfig 的 `@/` 别名。
+**跑的还是仓库里那份源码**，不是打包产物 —— 没有构建漂移，
+`import.meta.url` 也保持正确（`engine-pool.ts` 的 `projectRoot()` 靠它算根目录，
+产物一旦放到 `dist/` 会静默算成 `/`）。
+
+#### 为什么还是到不了 256M
+
+**引擎搜索时的 anon 峰值就 ~213~253MB**，而且**跟哈希表大小、线程数都无关**：
+
+| 配置 | anon 峰值 | cgroup 峰值 | AI 落子 |
+|---|---|---|---|
+| Hash 16MB / 2 线程 | 253MB | 334MB | 4~5 秒 |
+| Hash 16MB / 1 线程 | 249MB | 340MB | 2~4 秒 |
+| Hash 4MB / 1 线程 | 252MB | 330MB | 2~4 秒 |
+
+加上内核开销（页表、slab 等约 8MB）就已经 **260MB 上下** ——
+256M 的上限**连 file 缓存一点都不留也装不下**，数学上就不可能。
+
+内存上限实测（每档都真的打一局 AI）：
 
 | MemoryMax | 结果 |
 |---|---|
-| 256M | ❌ **cgroup OOM killer 打死引擎**（`constraint=CONSTRAINT_MEMCG`），AI 局中途服务被杀 |
-| 320M | ❌ 同样被打死 |
-| **384M** | ✅ 稳，实测峰值 cgroup **351MB**（anon 202MB + file 149MB） |
+| 256M / 272M / 288M / 320M | ❌ **cgroup OOM killer 打死引擎**，AI 局中途服务被杀 |
+| **384M** | ✅ 稳，峰值 333MB，余量 51MB |
 
-**差的不是参数，是进程结构**。开一局 AI 对局时，服务 cgroup 里是 **7 个进程**：
+#### 要再往下压，只能动引擎本身
 
-```
-① 主服务      node(tsx cli) 50MB + node(实际服务) 103MB + esbuild 服务 16MB
-② 引擎 worker node(tsx cli) 43MB + node(实际 worker) 85MB + esbuild 服务 10MB
-③ 引擎本体    stockfish ~160MB（哈希 16MB）
-```
-
-**两套完整的 tsx 栈** —— 因为 `src/server/engine-pool.ts` 会 spawn 一个独立的
-`src/server/engine-worker.ts` 子进程，**那个子进程也是用 tsx 起的**，
-于是又多了一套 node 运行时 + esbuild 服务。
-
-要压到 256M，得去掉 tsx 这一层，二选一：
-
-1. **预编译成 JS**（用仓库里已有的 esbuild 在本地打包好再传上去）——
-   `ExecStart` 改成 `node dist/server-ws.js`，引擎 worker 同理。
-   约省 130MB RSS。代价：部署多一步「本地构建 + 传产物」，
-   而且**跑的和源码不是同一个东西**（这类漂移正是本项目一直在防的）。
-2. **写一个 `@/` 别名解析 loader**（node 的 `module.register()`），
-   让 node 直接用 `--experimental-strip-types` 跑 .ts。
-   不用构建产物，但要处理「ESM 必须带扩展名」这条硬规则。
-
-**两条都是结构性改动**，不是改配置能解决的，所以没顺手做 ——
-要做得单独排一轮，并且要有门禁兜住。
+- **把引擎并进主进程**（不 spawn 独立的 `engine-worker.ts`）→
+  省掉 worker 那份 node 运行时（约 45MB anon）。
+  但那份隔离是有理由的：搜索是 CPU 密集的同步计算，放在主进程里
+  会把整个服务（所有房间的广播、棋钟计时）卡住。**这是架构改动，不是配置。**
+- **换一个更小的引擎二进制**（现在这个 103MB 的「通用二进制」把 NNUE 整个内嵌了）。
 
 ### 7.4 现在这台机器上的实际取值
 
 ```
-MemoryMax=384M              # 实测峰值 351MB + 余量（比原来的 700M 降 45%）
+MemoryMax=384M              # 实测峰值 333MB + 余量 51MB（比原来的 700M 降 45%）
 Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
 Environment=STOCKFISH_HASH_MB=16
+Environment=STOCKFISH_THREADS=1   # 2 核机器还跑着 4 个站点，引擎别占满两个核
 ```
+
+实测：AI 局连打 3 局，服务不重启、无 OOM，AI 落子 1.1~3.0 秒。
 
 
 
@@ -1149,11 +1166,12 @@ last -x reboot | head -10
 **① 内存上限**：`deploy/lan-chess-ws.service` 里加了 `MemoryMax`。
 数值是**实测推导**的，**引擎换了就得重算**：
 
-| 场景 | WASM 版（2026-11-27 实测） | 原生 Stockfish 19 + 哈希 16MB（2026-11-28 实测） |
+| 场景 | WASM 版 + tsx（2026-11-27） | 原生 SF 19 + node 类型剥离（2026-11-28 定稿） |
 |---|---|---|
-| 空闲（还没开过 AI 局） | 67MB | **78MB** |
-| 开一局 AI 对局（峰值） | **594MB**（引擎占 472MB） | **351MB**（anon 202 + file 149；引擎本体 160MB） |
+| 空闲（还没开过 AI 局） | 67MB | **106MB**（anon 73MB），cgroup 里 1 个进程 |
+| 开一局 AI 对局（峰值） | **594MB**（引擎占 472MB） | **333MB**（anon 213 + file 120），3 个进程 |
 | 玩完那一局之后 | 582MB（引擎常驻，**不还**） | **~340MB**（引擎 worker + stockfish **照样常驻，不还**） |
+| cgroup 里的进程数 | 7 个（两套 tsx 栈） | **3 个**（主服务 + 引擎 worker + 引擎） |
 | 引擎哈希 64 → 16MB | — | 引擎 anon 117 → **74.5MB**（省 42.6MB） |
 
 ⚠️ **两个坑**：
