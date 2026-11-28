@@ -12,4 +12,5 @@ export * from './themes';
 export * from './session';
 export * from './progress';
 export * from './notes';
+export * from './goal';
 export { PUZZLES } from './data';

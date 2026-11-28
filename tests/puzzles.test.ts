@@ -24,12 +24,15 @@ import {
   isAcceptedMove,
   isOpponentHopeless,
   isSolved,
+  lastCapture,
   loadProgress,
   markCurrent,
   markSolved,
   materialCp,
+  endsWithPromotion,
   opponentNoteText,
   playerMoveCount,
+  puzzleGoalText,
   saveProgress,
   sessionPosition,
   startSession,
@@ -332,6 +335,62 @@ describe('残局关卡 · 题库', () => {
     const fen = '8/8/8/8/8/8/Q3R3/4K1P1 w - - 0 1';
     expect(materialCp(fen, 'w')).toBe(900 + 500 + 100);
     expect(materialCp(fen, 'b')).toBe(0);
+  });
+
+  /*
+   * **目标那行字必须逐字对上真实收尾。**
+   *
+   * 背景：目标写着「黑方取胜」，走完却是 `Qg1+ Kf5 Qxg8` ——
+   * 白后被吃了、白王好好站着、**根本没将死**，
+   * 玩家只会觉得「这关判错了」（用户原话：「为什么这样就胜利了，
+   * 也没有将死对面啊」）。
+   *
+   * 实测 168 关「取胜」里**没有一关是将死**（引擎逐关复核），
+   * 所以「取胜」这行字必须说清**赢在哪**。
+   */
+  it('目标那行字说清「赢在哪」，不许只写「取胜」', () => {
+    for (const p of PUZZLES) {
+      const side = p.side === 'w' ? '白方' : '黑方';
+      const text = puzzleGoalText(p);
+
+      // 笼统的「X方取胜」不行 —— 玩家看不出赢在哪
+      expect(text, `${p.id} 的目标还是笼统的「${text}」`).not.toBe(`${side}取胜`);
+
+      if (p.goal === 'mate') {
+        // 将死题：必须说清几手杀
+        expect(text, `${p.id} 是将死题，目标里却没有手数`).toContain(`${p.mateIn ?? 1} 手内将死`);
+        continue;
+      }
+      if (p.goal === 'draw') {
+        expect(text, `${p.id} 是守和题`).toContain('守和');
+        continue;
+      }
+
+      // 取胜题：玩家最后一手吃的是什么，目标里就得说什么
+      const captured = lastCapture(p);
+      if (captured === 'q') expect(text, `${p.id} 吃的是后，目标里却没说`).toContain('后');
+      if (captured === 'r') expect(text, `${p.id} 吃的是车，目标里却没说`).toContain('车');
+      if (endsWithPromotion(p)) expect(text, `${p.id} 是升变收尾，目标里却没说`).toContain('升变');
+    }
+  });
+
+  it('目标文案与关卡事实一一对应（几个具体的例子）', () => {
+    // 吃后：说「赢下对方的后」
+    const tookQueen = PUZZLES.find((p) => p.goal === 'win' && lastCapture(p) === 'q');
+    expect(tookQueen, '题库里没有吃后取胜的关卡').toBeTruthy();
+    expect(puzzleGoalText(tookQueen!)).toContain('赢下对方的后');
+
+    // 升变：说「升变取胜」
+    const promoted = PUZZLES.find((p) => p.goal === 'win' && endsWithPromotion(p));
+    expect(promoted, '题库里没有升变取胜的关卡').toBeTruthy();
+    expect(puzzleGoalText(promoted!)).toContain('升变取胜');
+
+    // 最后一手不吃子：说「把优势变成胜势」
+    const quiet = PUZZLES.find(
+      (p) => p.goal === 'win' && !endsWithPromotion(p) && lastCapture(p) === null,
+    );
+    expect(quiet, '题库里没有「不吃子收尾」的取胜关卡').toBeTruthy();
+    expect(puzzleGoalText(quiet!)).toContain('把优势变成胜势');
   });
 
   it('note 的数据与它声称的结论一致', () => {

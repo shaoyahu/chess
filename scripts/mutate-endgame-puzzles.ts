@@ -18,6 +18,7 @@
  *     M9 走对之后不判定通关    → G7 必须红
  *     M13 解说恒真（无论事实都返回一句话）→ G12 必须红
  *     M14 「已败」阈值符号翻转  → 「已败」的判定规则必须红
+ *     M15 目标文案退回笼统的「取胜」→ 「不许只写「取胜」」必须红
  *
  * 为什么要做：
  *   守卫脚本自己也可能写错（比如断言写歪、跳过条件太宽），
@@ -39,10 +40,12 @@ const PAGE = resolve(process.cwd(), 'src/app/practice/page.tsx');
 const SESSION = resolve(process.cwd(), 'src/lib/practice/puzzles/session.ts');
 const NOTES = resolve(process.cwd(), 'src/lib/practice/puzzles/notes.ts');
 const TYPES = resolve(process.cwd(), 'src/lib/practice/puzzles/types.ts');
+const GOAL = resolve(process.cwd(), 'src/lib/practice/puzzles/goal.ts');
 const PAGE_BACKUP = resolve(process.cwd(), '.puzzle-mutation-page.tsx');
 const SESSION_BACKUP = resolve(process.cwd(), '.puzzle-mutation-session.ts');
 const NOTES_BACKUP = resolve(process.cwd(), '.puzzle-mutation-notes.ts');
 const TYPES_BACKUP = resolve(process.cwd(), '.puzzle-mutation-types.ts');
+const GOAL_BACKUP = resolve(process.cwd(), '.puzzle-mutation-goal.ts');
 
 type Guard = 'browser' | 'unit';
 
@@ -172,6 +175,18 @@ const MUTATIONS: Mutation[] = [
   },
   {
     /*
+     * 目标那行字退回笼统的「取胜」——
+     * 玩家看到对方王好好站着、局面也没终，会以为判错了
+     * （用户原话：「为什么这样就胜利了，也没有将死对面啊」）。
+     */
+    name: 'M15 目标文案退回笼统的「取胜」',
+    file: GOAL,
+    expect: '不许只写「取胜」',
+    guard: 'unit',
+    apply: (src) => src.replace('return `${side}赢下对方的后`;', 'return `${side}取胜`;'),
+  },
+  {
+    /*
      * 这条变异是**真实踩过的坑**：
      * 判据写成 `score <= -阈值`（阈值本身是负数），取反后变成 `score <= +阈值`
      * —— 于是几乎每个局面都被判成「对手已经输定了」。
@@ -227,10 +242,12 @@ function restoreAll(originals: Map<string, string>): void {
   copyFileSync(SESSION_BACKUP, SESSION);
   copyFileSync(NOTES_BACKUP, NOTES);
   copyFileSync(TYPES_BACKUP, TYPES);
+  copyFileSync(GOAL_BACKUP, GOAL);
   rmSync(PAGE_BACKUP, { force: true });
   rmSync(SESSION_BACKUP, { force: true });
   rmSync(NOTES_BACKUP, { force: true });
   rmSync(TYPES_BACKUP, { force: true });
+  rmSync(GOAL_BACKUP, { force: true });
   for (const [file, content] of originals) {
     if (readFileSync(file, 'utf-8') !== content) {
       console.error(`\n❌ 还原失败：${file} 与原始内容不一致，请检查！`);
@@ -245,11 +262,13 @@ async function main(): Promise<void> {
     [SESSION, readFileSync(SESSION, 'utf-8')],
     [NOTES, readFileSync(NOTES, 'utf-8')],
     [TYPES, readFileSync(TYPES, 'utf-8')],
+    [GOAL, readFileSync(GOAL, 'utf-8')],
   ]);
   copyFileSync(PAGE, PAGE_BACKUP);
   copyFileSync(SESSION, SESSION_BACKUP);
   copyFileSync(NOTES, NOTES_BACKUP);
   copyFileSync(TYPES, TYPES_BACKUP);
+  copyFileSync(GOAL, GOAL_BACKUP);
 
   // 被中断时也要还原 —— 否则仓库里留下的是**变异态的生产代码**
   const onSignal = (sig: string) => {

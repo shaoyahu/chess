@@ -5,7 +5,7 @@
  *   「残局关卡」是一条**独立的机制**（关卡列表 + 走子判定 + 提示 + 通关），
  *   跟课程演示、自由摆棋都不是一回事，混进别的脚本会让失败难定位。
  *
- * 门禁清单（12 条，G1~G12）：
+ * 门禁清单（13 条，G1~G13）：
  *   G1  /practice 有「残局关卡」分区，点它真的切过去。
  *   G2  关卡列表齐全，每关都带编号、主题与难度星。
  *   G3  选第 1 关 → **棋盘摆出来的就是这一关的起始局面**（棋子分布一致）。
@@ -18,9 +18,10 @@
  *   G10 主题分类筛选：点某个类别，列表只剩那一类；点「全部」能恢复。
  *   G11 对手走完之后，右栏出现「对手怎么走」的解说。
  *   G12 解说有**实质内容**：每个对手节点都带 note，字段自洽，文本不空。
+ *   G13 目标那行字跟**真实收尾**对上（不写笼统的「取胜」）。
  *
  * 判定方式跟项目规矩一致：**进程退出码** + 门禁自己打印的 ❌ 行 + 门禁编号。
- * 每条门禁的失败信息都必须带上自己的编号（G1…G12）——
+ * 每条门禁的失败信息都必须带上自己的编号（G1…G13）——
  * 失败信息不带编号就会出现假绿（读的人不知道是哪一条挂的）。
  *
  * **这一份门禁自己也要被变异测试过**（见 scripts/mutate-endgame-puzzles.ts）。
@@ -35,6 +36,7 @@ import { join } from 'node:path';
 import { PUZZLES } from '../src/lib/practice/puzzles/data';
 import { themeLabel } from '../src/lib/practice/puzzles/themes';
 import { opponentNoteText } from '../src/lib/practice/puzzles/notes';
+import { puzzleGoalText } from '../src/lib/practice/puzzles/goal';
 
 /** 地址解析：优先 `--url=`，其次第一个长得像 http 地址的位置参数 */
 function resolveUrl(argv: string[]): string {
@@ -577,6 +579,40 @@ async function main(): Promise<void> {
             throw new Error(`G12 ${p.id} 的 ${ply.san} 是唯一合法着法，解说却没说：「${text}」`);
           }
         }
+      }
+    });
+
+    /* ================================================================ */
+    /* G13：目标那行字跟真实收尾对上                                  */
+    /* ================================================================ */
+    await step('G13', '目标那行字说清「赢在哪」，不是笼统的「取胜」', async () => {
+      /*
+       * 背景：目标写着「黑方取胜」，走完却是 `Qg1+ Kf5 Qxg8` ——
+       * 白后被吃了、白王好好站着、**根本没将死**，
+       * 玩家只会觉得「这关判错了」（用户原话：「为什么这样就胜利了，
+       * 也没有将死对面啊」）。
+       *
+       * 实测 168 关「取胜」里没有一关是将死 ——
+       * 所以这行字必须按真实收尾说：赢下对方的后 / 升变取胜 / 把优势变成胜势。
+       */
+      const shown = await page.evaluate<string>(
+        `(() => {
+          const rows = [...document.querySelectorAll('.practice-readout')];
+          const hit = rows.find((r) => (r.textContent || '').includes('目标'));
+          if (!hit) return '';
+          return ((hit.querySelector('.practice-readout-value') || {}).textContent || '').trim();
+        })()`,
+      );
+      if (!shown) throw new Error('G13 右栏里找不到「目标」那一行');
+
+      const expected = puzzleGoalText(puzzle);
+      if (shown !== expected) {
+        throw new Error(`G13 目标写的是「${shown}」，按这一关的真实收尾应该是「${expected}」`);
+      }
+      // 笼统的「X方取胜」不行 —— 玩家看不出赢在哪
+      const side = puzzle.side === 'w' ? '白方' : '黑方';
+      if (shown === `${side}取胜`) {
+        throw new Error(`G13 目标还是笼统的「${shown}」，玩家看不出这一关赢在哪`);
       }
     });
   } finally {

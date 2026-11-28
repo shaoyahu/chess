@@ -87,6 +87,7 @@ import {
   markSolved,
   opponentNoteText,
   playerMoveCount,
+  puzzleGoalText,
   saveProgress,
   sessionPosition,
   startSession,
@@ -135,19 +136,6 @@ const READ_ONLY_INTERACTION: BoardInteraction = {
   beginDrag: () => false,
   endDrag: () => {},
 };
-
-/**
- * 关卡目标的中文文案。
- *
- * 这是**任务状态**，不是解释性文字 —— 玩家得知道这一关要达成什么。
- */
-function puzzleGoalText(puzzle: Puzzle): string {
-  const side = puzzle.side === 'w' ? '白方' : '黑方';
-  if (puzzle.goal === 'mate') return `${side} ${puzzle.mateIn ?? 1} 手内将死`;
-  if (puzzle.goal === 'win') return `${side}取胜`;
-  if (puzzle.goal === 'draw') return `${side}守和`;
-  return `${side}升变取胜`;
-}
 
 /** 自由练习的终局文案：两个人都是玩家，所以只说「谁被将死」，不说谁赢 */
 function practiceResultText(fen: string): string | null {
