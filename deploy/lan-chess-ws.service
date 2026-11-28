@@ -57,8 +57,20 @@ Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
 Environment=STOCKFISH_HASH_MB=16
 
 # 改这里：node 的绝对路径（which node 查）。
-# 直接用 tsx 的 CLI，避免多一层 npm 包装（npm start 会再套一层 sh）。
-ExecStart=/usr/bin/node /opt/lan-chess/node_modules/tsx/dist/cli.mjs server-ws.ts
+#
+# ⚠️ **不要用 tsx 跑这个入口** —— tsx 每次要拉起一整套运行时
+# （一个 tsx 的 node 运行时 + 一个常驻的 esbuild 服务，约 66MB RSS），
+# 而服务端还会 spawn 一个独立的引擎 worker 子进程，**那个也是用 tsx 起的**，
+# 于是开一局 AI 对局时 cgroup 里是 7 个进程、RSS 合计约 460MB，
+# 内存上限压不到 256M（实测 256M / 320M 都会被 cgroup OOM killer 打死引擎）。
+#
+# 现在用的是 node 自带的 TypeScript 支持（22.18+ 默认开启类型剥离，
+# `--experimental-transform-types` 连 enum、参数属性也支持），
+# `scripts/ts-loader.mjs` 负责补文件扩展名和 tsconfig 的 `@/` 别名。
+# **跑的还是仓库里那份源码**，不是打包产物 —— 没有构建漂移的问题。
+#
+# node 版本要求：**22.18+**（更老的没有类型剥离）。
+ExecStart=/usr/bin/node --experimental-transform-types --import file:///opt/lan-chess/scripts/ts-loader.mjs /opt/lan-chess/server-ws.ts
 
 Restart=always
 RestartSec=3

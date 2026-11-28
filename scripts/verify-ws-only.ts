@@ -37,6 +37,7 @@ import { createServer } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { GameClient, sleep } from './lib/game-client';
 
 /** 起服务时用的入口 —— 就是那个「只跑 WS、不带 Next.js」的入口 */
@@ -133,21 +134,32 @@ interface WsServer {
  *  ① 端口 —— 用空闲随机端口，绝不碰 3000（那是用户自己跑着的服务）
  *  ② 存档目录 —— 临时目录，绝不碰仓库的 `.data/`
  *  ③ 构建目录 —— 这里**用不到**（这个入口不跑 Next.js，不产生构建产物）
+ *
+ * ⚠️ **启动方式必须和 systemd 单元里生产用的那一种一致** ——
+ *    生产改成了「node + scripts/ts-loader.mjs」（为了省掉 tsx 的两套运行时），
+ *    门禁如果还测 tsx，就等于**测的不是线上跑的那条路**，
+ *    线上起不来门禁还是绿的。所以这里用**同一套**参数。
+ *    （tsx 那条路仍然要有人跑 —— `server.ts` / 本地开发还在用它，
+ *    但那由别的门禁覆盖，不是这个脚本的职责。）
  */
 async function startWsServer(dataDir: string): Promise<WsServer> {
   const port = await freePort();
-  const tsx = join(process.cwd(), 'node_modules', '.bin', 'tsx');
-  const proc = spawn(tsx, [ENTRY], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      PORT: String(port),
-      HOST: '127.0.0.1',
-      LAN_CHESS_DATA_DIR: dataDir,
-      NODE_ENV: 'production',
+  const loader = join(process.cwd(), 'scripts', 'ts-loader.mjs');
+  const proc = spawn(
+    process.execPath,
+    ['--experimental-transform-types', '--import', pathToFileURL(loader).href, ENTRY],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HOST: '127.0.0.1',
+        LAN_CHESS_DATA_DIR: dataDir,
+        NODE_ENV: 'production',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  );
 
   let err = '';
   proc.stderr?.on('data', (buf: Buffer) => {

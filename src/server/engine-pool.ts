@@ -19,7 +19,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AnalyzeResult, AsyncAnalyzeOptions, EngineMove } from '../lib/engine/analysis';
 import type { Color } from '../lib/types';
 
@@ -87,11 +87,30 @@ function projectRoot(): string {
 
 /**
  * 决定用什么命令启动子进程。
- * 父进程是用 `tsx server.ts` 起的（dev 和 prod 都是），所以不能直接 `node xxx.ts`。
- * 优先用仓库里的 tsx 可执行文件；没有就退回 `node --import tsx`。
+ *
+ * **首选：node 自带的 TypeScript 支持 + 本仓库的解析 loader**
+ * （`scripts/ts-loader.mjs`）。理由是内存：tsx 每次要拉起
+ * 一套 tsx 的 node 运行时 **加** 一个常驻的 esbuild 服务（约 66MB RSS），
+ * 而主服务和这个 worker 子进程**各要一套** —— 开一局 AI 对局时，
+ * 服务 cgroup 里就是 7 个进程、RSS 合计约 460MB，
+ * 内存上限压不到 256M（实测 256M / 320M 都会被 cgroup OOM killer 打死引擎）。
+ *
+ * node 22.18+ 自带类型剥离（`--experimental-transform-types`），
+ * 不需要 esbuild；`scripts/ts-loader.mjs` 负责补扩展名和 `@/` 别名。
+ *
+ * **兜底**：仓库里没这个 loader（比如老的部署）就退回 tsx，
+ * 保证功能不受影响 —— 只是内存代价回到从前。
  */
 function resolveWorkerCommand(script: string): { cmd: string; args: string[] } {
   const root = projectRoot();
+  const loader = path.join(root, 'scripts', 'ts-loader.mjs');
+  if (existsSync(loader)) {
+    return {
+      cmd: process.execPath,
+      args: ['--experimental-transform-types', '--import', pathToFileURL(loader).href, script],
+    };
+  }
+  // 兜底：仓库里的 tsx 可执行文件。
   const tsxBin = path.join(root, 'node_modules', '.bin', 'tsx');
   if (existsSync(tsxBin)) {
     return { cmd: tsxBin, args: [script] };
@@ -99,8 +118,8 @@ function resolveWorkerCommand(script: string): { cmd: string; args: string[] } {
   // 兜底：node 的 --import 加载器（node v22 支持）。
   // 注意 --import 是 node 自己的命令行参数，必须排在脚本路径前面，
   // 所以直接拼进 args，而不是塞进 spawn 的 execArgv（spawn 的 SpawnOptions 里没有这个字段）。
-  const loader = path.join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs');
-  const flags = existsSync(loader) ? ['--import', loader] : ['--import', 'tsx'];
+  const tsxLoader = path.join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs');
+  const flags = existsSync(tsxLoader) ? ['--import', tsxLoader] : ['--import', 'tsx'];
   return { cmd: process.execPath, args: [...flags, script] };
 }
 
