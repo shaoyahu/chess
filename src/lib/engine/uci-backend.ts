@@ -23,6 +23,37 @@ const DEFAULT_HASH_MB = 64;
 const DEFAULT_THREADS = 2;
 
 /**
+ * 从环境变量里读一个正整数。
+ *
+ * 为什么要有这层：引擎的**哈希表大小**和**线程数**在两端的最优值不一样 ——
+ * 本机开发想开大一点（搜索更稳），共享生产机上必须开小一点
+ * （内存就那么多，哈希开大就把它顶爆）。
+ * 写死在代码里只能二选一，做成环境变量则各按各的来。
+ *
+ * 优先级（见 `start()`）：显式传参 > 环境变量 > 内置默认值。
+ */
+function positiveIntFromEnv(
+  env: Record<string, string | undefined>,
+  name: string,
+): number | undefined {
+  const raw = env[name]?.trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.floor(n);
+}
+
+/** 哈希表大小（MB）：`STOCKFISH_HASH_MB` 可以覆盖 */
+export function hashMbFromEnv(env: Record<string, string | undefined> = process.env): number | undefined {
+  return positiveIntFromEnv(env, 'STOCKFISH_HASH_MB');
+}
+
+/** 线程数：`STOCKFISH_THREADS` 可以覆盖 */
+export function threadsFromEnv(env: Record<string, string | undefined> = process.env): number | undefined {
+  return positiveIntFromEnv(env, 'STOCKFISH_THREADS');
+}
+
+/**
  * 引擎不可用 / 出错。
  * 上层据此决定要不要降级到自研引擎。
  */
@@ -100,8 +131,9 @@ export class StockfishBackend {
         );
       }
       // 线程数与哈希表：开太高会和并发的其它引擎实例抢 CPU / 内存
-      engine.setOption('Threads', this.opts.threads ?? DEFAULT_THREADS);
-      engine.setOption('Hash', this.opts.hashMb ?? DEFAULT_HASH_MB);
+      // （环境变量能覆盖，见 hashMbFromEnv / threadsFromEnv 的说明）
+      engine.setOption('Threads', this.opts.threads ?? threadsFromEnv() ?? DEFAULT_THREADS);
+      engine.setOption('Hash', this.opts.hashMb ?? hashMbFromEnv() ?? DEFAULT_HASH_MB);
       this.engine = engine;
     })();
 

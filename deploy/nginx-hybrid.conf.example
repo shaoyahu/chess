@@ -17,6 +17,16 @@
 # 浏览器对 WebSocket **不适用**同源策略，服务端也没做 Origin 校验
 # （已核对过 src/server/ws-hub.ts），所以连得上。
 # 但下面**建议**加一条 Origin 白名单 —— 公网开放前最好加（见文末）。
+#
+# ⚠️⚠️ **上游只能写 IP 字面量**（`127.0.0.1:3000` 就是 IP）。
+# nginx 在**加载配置时**就把 `proxy_pass` 里的域名解析成 IP —— 解析不了就
+#   [emerg] host not found in upstream "..."
+# 然后**整个 nginx 起不来**，同机所有站点一起下线（2026-11-28 实测中招两次）。
+# 实在要代理到域名，就改成「运行时解析」：
+#     resolver 223.5.5.5 119.29.29.29 valid=30s ipv6=off;
+#     set $upstream <域名>;            # ⚠️ set 必须写在 rewrite 前面
+#     proxy_pass https://$upstream;
+# 细节与验证方法见 docs/deploy.md §19。
 
 server {
     listen 443 ssl;

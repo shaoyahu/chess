@@ -45,9 +45,16 @@ Environment=PORT=3000
 # 也方便跟「整站部署」那套并存（两个单元各写各的存档）。
 Environment=LAN_CHESS_DATA_DIR=/opt/lan-chess/.data
 
-# 装了原生 Stockfish 的话把路径写这儿；不写就自动用 npm 的 WASM 版。
-# ⚠️ 这台机器内存紧张的话，建议装**原生** Stockfish（同哈希下更省内存、更快）。
-# Environment=STOCKFISH_PATH=/usr/games/stockfish
+# 引擎路径。**装了原生 Stockfish 就写这儿** —— 原生版比 npm 的 WASM 版
+# 省内存得多（实测 WASM 版光哈希就吃 472MB，原生版哈希 64MB 时整个引擎
+# anon 才 117MB）。
+# 不写就自动用 npm 的 WASM 版（跨平台都能跑，但内存代价大）。
+Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
+
+# 引擎哈希表大小（MB）。**内存紧张的小机器要调小**：
+# 实测 64MB → 16MB，引擎的 anon 占用从 117MB 降到 74.5MB（省 42.6MB）。
+# 本机开发不用设，走默认的 64MB。
+Environment=STOCKFISH_HASH_MB=16
 
 # 改这里：node 的绝对路径（which node 查）。
 # 直接用 tsx 的 CLI，避免多一层 npm 包装（npm start 会再套一层 sh）。
@@ -60,22 +67,28 @@ RestartSec=3
 StandardOutput=journal
 StandardError=journal
 
-# ---- 内存上限（2026-11-27 实测推导，不是拍脑袋）----
+# ---- 内存上限（2026-11-28 实测重算，不是拍脑袋）----
 #
 # 为什么要设：这台机器还跑着另外 4 个线上站点，
 # 我们这个服务要是无节制地吃内存，被挤爆的是**别人的服务**。
 #
-# 为什么是 700M 而不是 256M —— **实测值**：
-#   空闲时整个 cgroup：        67MB
-#   开一局 AI 对局时：         594MB   ← WASM 版 Stockfish 子进程占 472MB
-#   （引擎子进程在同一个 cgroup 里；玩完一局它还常驻，内存不还）
-# 设 256M 的话，**每一局 AI 对局都会把服务打死**（OOM）。
-# 700M = 实测峰值 + 余量，同时把本服务限制在整机内存（约 1586MB）的 44% 以内，
-# 同机另外几个站点还剩得下。
+# 2026-11-27 的 700M 是**按 WASM 版引擎**定的：
+#   空闲 67MB / 开一局 AI 对局 594MB（WASM 版引擎一个就占 472MB）
+#   → 256M 会把每一局 AI 对局都打死，所以定 700M。
 #
-# 想把上限压回 256M，得先装**原生** Stockfish（150~200MB，见 §7）——
-# WASM 版光哈希就吃 472MB。
-MemoryMax=700M
+# 2026-11-28 换成**原生 Stockfish 19** 后重新实测（这台机器）：
+#   引擎 anon：117MB（哈希 64MB）→ 74.5MB（哈希 16MB）
+#   引擎 file：~98MB（103MB 二进制里 NNUE 那些页，**内核可回收**）
+#   服务 cgroup 峰值：anon ~187MB / file ~242MB / 合计 ~480MB
+#
+# 定 256M 的依据：anon ~187MB + 内核开销 ~8MB = ~195MB，
+# 剩下 ~60MB 给 file 缓存 —— 内核会优先回收 file 缓存
+# （引擎二进制页、node_modules 页缓存都能丢，丢了只是变慢，不会出错）。
+# 这就是「256M 压得回去」的全部依据，**不是拍脑袋**。
+#
+# ⚠️ 代价：内存吃紧时引擎的 NNUE 页会被回收再读盘，
+#    AI 落子会变慢。要更快就把 STOCKFISH_HASH_MB 调大、MemoryMax 调高。
+MemoryMax=256M
 
 # 基本加固：不让提权，/tmp 私有
 NoNewPrivileges=true

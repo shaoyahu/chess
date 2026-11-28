@@ -238,20 +238,62 @@ npm run deploy:check
 > 读写同一个目录，构建期间它可能读到半成品（报错指向构建，真凶是那个还活着的服务）。
 > 顺序错了就是「构建偶发失败 / 服务莫名 500」这种看着不相干的症状。
 
-## 7. 棋力：装原生 Stockfish（可选）
+## 7. 棋力：装原生 Stockfish（可选，但内存差很多）
 
 引擎来源的优先级是「系统 stockfish → npm 的 WASM 版 → 自研引擎」：
 
 ```bash
-sudo apt install stockfish          # Debian/Ubuntu
-# 或者指到具体路径：
-sudo systemctl edit lan-chess        # 加 Environment=STOCKFISH_PATH=/usr/games/stockfish
+# 方案 A：发行版包（最省事，版本可能偏老）
+sudo apt install stockfish          # Debian/Ubuntu，装在 /usr/games/stockfish
+
+# 方案 B：官方通用二进制（2026-11-28 用的这个，版本与 npm 包一致）
+curl -sLO https://github.com/official-stockfish/Stockfish/releases/download/sf_19/stockfish-linux-x86-64-universal.tar.gz
+sha256sum stockfish-linux-x86-64-universal.tar.gz
+# 期望 9defc0d4e55d49c65a6d042f3e571a39fcea499ade6dbe741b53b8c65e03611f
+tar xzf stockfish-linux-x86-64-universal.tar.gz
+sudo install -m 0755 stockfish/stockfish-linux-x86-64-universal /usr/local/bin/stockfish
+
+# 指到具体路径（不设就自动用 npm 的 WASM 版）：
+sudo systemctl edit lan-chess-ws     # 加 Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
 ```
+
+> **方案 B 的两个坑**：
+> 1. 那个 tar.gz **名字里有 universal，但不是纯源码** —— 包里既有 `src/` 也有
+>    **编译好的 `stockfish-linux-x86-64-universal` 可执行文件**（NNUE 已内嵌，
+>    103MB，不需要额外的 `.nnue` 文件）。别被包结构骗去编译一遍。
+> 2. 它是 **x86-64** 的，Apple Silicon 的 Mac 用不了（brew 装的那个是 arm64）。
 
 原生版带完整 NNUE、多线程，棋力最强；npm 那个 `stockfish` 包是纯 JS+WASM，跨平台都能跑，
 棋力略低但完全够用；两个都没有就**自动降级到自研引擎** —— 照样能开局，AI 明显弱一档。
 
 降级是**静默**的（只写进服务日志），所以「AI 棋力突然变弱」先查这一条。
+
+### 7.1 内存差多少（2026-11-28 在一台 1586MB 的共享生产机上实测）
+
+| | npm 的 WASM 版 | 原生 Stockfish 19 |
+|---|---|---|
+| 引擎进程 RSS | 472MB | 330MB（其中 anon 117MB / file 98MB） |
+| 开一局 AI 对局时服务 cgroup 峰值 | 594MB | ~480MB（anon ~187MB / file ~242MB） |
+| 玩完一局之后 | 582MB（**不释放**） | 同样常驻，不释放 |
+
+**原生版赢在 anon（不可回收的那部分）**：WASM 版的 472MB 基本全是堆；
+原生版的 file 部分是二进制里的页，**内核内存紧张时可以回收**（丢了只是变慢，不会出错）。
+
+### 7.2 两个能救内存的环境变量
+
+```ini
+Environment=STOCKFISH_PATH=/usr/local/bin/stockfish   # 用哪个引擎
+Environment=STOCKFISH_HASH_MB=16                      # 哈希表大小（MB）
+Environment=STOCKFISH_THREADS=2                       # 线程数
+```
+
+- `STOCKFISH_HASH_MB`：实测 **64 → 16，引擎 anon 从 117MB 降到 74.5MB**（省 42.6MB）。
+  哈希表开多大是**端上最优值不一样**的事 —— 本机开发想开大，共享生产机必须开小。
+  不设就走默认 64MB。
+- `STOCKFISH_THREADS`：线程数。2 核小机器上开 2 个线程会和同机其它服务抢 CPU。
+
+优先级：**显式传参 > 环境变量 > 内置默认值**（有单测钉住，见 `tests/engine-options.test.ts`）。
+
 
 ## 8. 数据与持久化
 
@@ -1058,23 +1100,24 @@ last -x reboot | head -10
 4. 唯一一次真正的压测是 **11-23**（那次有 OOM 记录，是另一回事，见 §2）。
    **这条路的最终处置：不再压测**（球球 2026-11-27 拍板，§2、§17.12、§18.6）。
 
-### 18.9 监控与内存上限（2026-11-27 装好）
+### 18.9 监控与内存上限（2026-11-27 装好，2026-11-28 按原生引擎重算）
 
-**① 内存上限**：`deploy/lan-chess-ws.service` 里加了 `MemoryMax=700M`。
-数值是**实测推导**的：
+**① 内存上限**：`deploy/lan-chess-ws.service` 里加了 `MemoryMax`。
+数值是**实测推导**的，**引擎换了就得重算**：
 
-| 场景 | 本服务 cgroup 内存 |
-|---|---|
-| 空闲 | **67MB** |
-| 开一局 AI 对局（引擎子进程在同一个 cgroup 里） | **594MB** ← WASM 版 Stockfish 占 472MB |
-| 玩完那一局之后 | **582MB**（引擎常驻，**不还**） |
+| 场景 | WASM 版（2026-11-27 实测） | 原生 Stockfish 19（2026-11-28 实测） |
+|---|---|---|
+| 空闲 | 67MB | ~104MB |
+| 开一局 AI 对局 | **594MB**（引擎占 472MB） | **~480MB**（引擎 330MB：anon 117 + file 98） |
+| 玩完那一局之后 | 582MB（引擎常驻，**不还**） | ~480MB（同样常驻） |
+| 引擎哈希调成 16MB 之后 | — | 引擎 anon 117 → **74.5MB** |
 
 ⚠️ **两个坑**：
-1. `MemoryMax=256M`（我最初提的数字）**会打死每一局 AI 对局** —— 实测峰值 594MB。
-   所以改成 700M（实测峰值 + 余量），仍然把本服务限制在整机（约 1586MB）的 44% 以内。
-2. **玩一局 AI 对局，整机可用内存会从 725MB 掉到 264MB**（WASM Stockfish 的哈希吃 472MB，
-   而且玩完还常驻）。要彻底解决得装**原生** Stockfish（150~200MB，见 §7），
-   或者玩完 AI 局重启一下服务把引擎放掉。
+1. `MemoryMax=256M` 在** WASM 版**下**会打死每一局 AI 对局** —— 实测峰值 594MB。
+   所以当时定 700M。换原生引擎 + 哈希 16MB 之后，anon 降到 ~187MB，
+   **256M 才重新变得可行**（详见 §7.1、§19.3）。
+2. **玩一局 AI 对局，整机可用内存会掉一大截**（引擎常驻，**不还**）。
+   要彻底解决得装原生 Stockfish（见 §7），或者玩完 AI 局重启一下服务把引擎放掉。
 
 **② 极简监控**（球球拍板要）：每 5 分钟采一次，写进 journal。
 
@@ -1108,3 +1151,104 @@ journalctl -u lan-chess-watchdog.service --since "-1 day" --no-pager | tail -50
 
 
 
+
+---
+
+## 19. nginx 开机依赖 DNS —— 全站下线的真根因（2026-11-28 修好并实测）
+
+### 19.1 症状
+
+同一台机器上的**所有** nginx 站点一起下线（不是某一个站点挂，是全挂），
+而且**只在开机/重启 nginx 之后出现**。表现：
+
+- `systemctl status nginx` 反复起不来（`Restart=always` 一直重试）；
+- 80/443 端口根本不监听 → 所有站点返回「连接被拒绝」；
+- nginx 的错误日志里有一条：
+
+```
+[emerg] host not found in upstream "<外部上游域名>" in /etc/nginx/sites-enabled/<站点>:NN
+```
+
+### 19.2 根因
+
+**nginx 在加载配置文件的时候就把 `proxy_pass` 里的域名解析成 IP。**
+解析不了 → 配置校验直接失败 → **整个 nginx 起不来** → 同机所有站点一起下线。
+
+```
+开机 → 读配置 → 解析 proxy_pass 的域名 → DNS 还没通 → [emerg] host not found → nginx 退出
+```
+
+关键是**「开机那一刻 DNS 还没通」**：不是一直解析不了，只是**早开机那几秒**解析不了，
+但那就已经足够让 nginx 永远起不来了（除非有人手工再 `systemctl start` 一次）。
+
+⚠️ **只要 `proxy_pass` 里有一个域名，这台机器就有这个风险**。
+全部写成 IP 字面量（`127.0.0.1:3000` 这种）的配置**天然免疫**。
+
+### 19.3 修法：域名型上游改成「运行时解析」
+
+```nginx
+location ^~ /<前缀>/ {
+    # 域名在**请求时**解析，开机不再依赖 DNS
+    resolver 223.5.5.5 119.29.29.29 valid=30s ipv6=off;
+    resolver_timeout 5s;
+    set $upstream <外部上游域名>;          # ⚠️ set 必须在 rewrite 前面
+
+    rewrite ^/<前缀>/(.*)$ /<真实路径>/$1 break;
+    proxy_pass https://$upstream;
+    proxy_ssl_server_name on;
+    proxy_ssl_name <外部上游域名>;          # SNI 显式化（变量模式下别靠推断）
+}
+```
+
+三个容易踩的点：
+
+1. **`set` 必须写在 `rewrite ... break` 前面** ——
+   `break` 会中断本 location 里后续的 rewrite 阶段指令，`set` 写在后面等于没写。
+2. **`proxy_ssl_name` 要显式写** —— 变量模式下 `$proxy_host` 的取值路径不一样，
+   写死更保险（SNI 不对，CDN 会拒）。
+3. **`ipv6=off`** —— 很多 CDN 同时给 A 和 AAAA 记录，
+   而小机器往往**没有 IPv6 出口**，让 nginx 去连 AAAA 就是自找麻烦。
+
+### 19.4 怎么验证（这是可复现的，不用等它再犯）
+
+用 `unshare -n` 建一个**没有网络**的命名空间跑 `nginx -t`：
+
+```bash
+unshare -n nginx -t; echo "退出码=$?"
+```
+
+| | 改之前 | 改之后 |
+|---|---|---|
+| 退出码 | **1**（`host not found in upstream`） | **0**（syntax is ok） |
+
+**改完还必须比对响应字节** —— 变量形式的 `proxy_pass` 和字面量形式的 URI 处理不完全一样：
+
+```bash
+for u in "/" "/?x=1" "/not-exist-404"; do
+  curl -s -o "b$n" "https://<站点>/<前缀>$u"; sha256sum "b$n"
+done
+# 改前改后各存一份，逐字节 cmp
+```
+
+实测三条路径（首页 / 带 query 的 / 404）**字节完全一致**，说明 rewrite 与 sub_filter 行为零变化。
+
+改完还要验：五个站点逐个 curl、`/healthz`、以及一次 **WebSocket 升级（期望 101）** ——
+只比对 `/` 的字节**发现不了 WS 被改坏**。
+
+### 19.5 顺带纠正：2026-11-28 的两次「僵死」是误判
+
+那天先后两次出现「ping 通但所有 TCP 端口连不上」，当时判断成「整机僵死」并重启了两次。
+事后翻证据，**服务器一直是活的**：
+
+- watchdog 每 5 分钟的采样**连续不断**，load 0.02~0.09、磁盘 38%、内存剩 350~770MB；
+- nginx 访问日志里，**同一分钟**还有来自同一台客户端的 `/ws` 101 成功记录；
+- 内核日志里 **零条 OOM 记录**、零条 conntrack 表满、零条 hung task；
+- 防火墙规则里没有任何针对客户端 IP 的 DROP，fail2ban 也没装。
+
+⇒ 真正连不上的只是**我这边发起连接的那条通道**，不是服务器。
+**「ping 通 + TCP 不握手」不能直接推出「整机僵死」** ——
+它至少还有「网络被丢包」「conntrack 满」「防火墙封 IP」等几种解释，
+必须用服务端侧的证据（watchdog 采样 / 访问日志 / 内核日志）去排除。
+
+**教训**：判断「服务器死了」之前，先看**服务器自己**的日志还在不在写。
+还在写 → 服务器活着，问题在网络或客户端。
